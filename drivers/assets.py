@@ -1,29 +1,28 @@
-# drivers/assets.py
-# Asset manager — indexes and loads bitmaps and audio from the SD card.
+# drivers/assets.py — Button Blasters
+# Asset manager — indexes and loads bitmaps and audio from SD card.
 #
-# SD card directory layout expected:
-#   /sd/
-#     images/
-#       shared/          ← used by multiple games (icons, UI chrome)
-#       <game_id>/       ← per-game bitmaps, e.g. /sd/images/match/
-#     audio/
-#       sfx/             ← short sound effects  (ding.wav, wrong.wav …)
-#       voice/           ← voice clips          (correct.wav, great_job.wav …)
-#       music/           ← background loops     (menu.wav, game1.wav …)
+# SD card status: DEFERRED
+#   Built-in SD slot on ILI9488 module is unusable — ILI9488 SDO
+#   permanently drives MISO (GP4) low. Confirmed 0V via GPIO read.
+#   Fix: separate SPI SD card breakout with dedicated MISO line.
+#   GP3 reserved for SD_CS. mount_sd() will fail gracefully until
+#   the breakout module is sourced and wired.
 #
-# Bitmap file format: raw RGB565, little-endian, no header.
-# Filename encodes geometry: cat_64x64.raw, shape_240x280.raw
-# (Width × height extracted from filename automatically.)
+# SD card directory layout:
+#   /sd/images/shared/       ← shared UI assets (icons, chrome)
+#   /sd/images/<game_id>/    ← per-game bitmaps
+#   /sd/audio/sfx/           ← short sound effects
+#   /sd/audio/voice/         ← voice clips
+#   /sd/audio/music/         ← background loops
+#   /sd/adventure/stories/   ← My Big Day Out JSON story data
 #
-# Usage:
-#   buf = await assets.load_image("match/cat_64x64.raw")
-#   w, h = assets.image_size("cat_64x64.raw")
+# Bitmap format: raw RGB565 little-endian, no header.
+# Filename encodes geometry: cat_64x64.raw → 64×64 pixels
+# Convert: ffmpeg -i input.png -vf scale=64:64 -pix_fmt rgb565le out.raw
 
 import asyncio
 import os
 import config
-from drivers.spi_bus import spi_bus
-from machine import Pin, SPI
 
 
 _SD_MOUNT = "/sd"
@@ -34,19 +33,28 @@ _AUD_ROOT = _SD_MOUNT + "/audio"
 class AssetManager:
 
     def __init__(self):
-        self._index = {}      # filename → full path
-        self._cache = {}      # path → bytearray  (small items only)
-        self._cache_limit = 32_000   # bytes — don't cache anything larger
+        self._index       = {}        # filename → full path
+        self._cache       = {}        # path → bytearray
+        self._cache_limit = 32_000    # bytes — don't cache larger files
+        self._sd_mounted  = False
 
     # ── SD card mount ────────────────────────────────────────────
 
-    def mount_sd(self):
-        """Mount the SD card over SPI.  Call once at boot (blocking)."""
-        import uos
+    def mount_sd(self) -> bool:
+        """
+        Mount the SD card over SPI. Call once at boot (blocking).
+        Returns True on success, False if SD not available.
+        SD card is deferred — failure is non-fatal.
+        """
+        if config.SD_DEFERRED:
+            print("[assets] SD card deferred — separate breakout needed")
+            return False
         try:
-            from sdcard import SDCard   # MicroPython SDCard driver
+            from sdcard import SDCard
+            from machine import SPI, Pin
+            from drivers.spi_bus import spi_bus
+
             cs = Pin(config.PIN_CS_SD, Pin.OUT, value=1)
-            # Temporarily re-init SPI at SD init speed
             sd_spi = SPI(
                 config.SPI_ID,
                 baudrate=config.SPI_FREQ_SD_INIT,
@@ -55,17 +63,19 @@ class AssetManager:
                 miso=Pin(config.PIN_MISO),
             )
             sd = SDCard(sd_spi, cs)
-            uos.mount(sd, _SD_MOUNT)
-            # Bump SPI back to display speed
+            os.mount(sd, _SD_MOUNT)
             spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)
+            self._sd_mounted = True
             print("[assets] SD card mounted at", _SD_MOUNT)
             return True
         except Exception as e:
-            print("[assets] SD mount failed:", e)
+            print(f"[assets] SD mount failed: {e}")
             return False
 
     def build_index(self):
         """Walk the SD image tree and record all .raw paths."""
+        if not self._sd_mounted:
+            return
         self._index.clear()
         self._walk(_IMG_ROOT)
         print(f"[assets] indexed {len(self._index)} images")
@@ -75,7 +85,7 @@ class AssetManager:
             for entry in os.listdir(path):
                 full = path + "/" + entry
                 try:
-                    os.stat(full + "/.")   # is it a directory?
+                    os.stat(full + "/.")
                     self._walk(full)
                 except OSError:
                     if entry.endswith(".raw"):
@@ -88,19 +98,20 @@ class AssetManager:
     @staticmethod
     def image_size(filename: str):
         """Parse WxH from filename like 'cat_64x64.raw' → (64, 64)."""
-        name = filename.rsplit(".", 1)[0]   # strip .raw
-        part = name.rsplit("_", 1)[-1]      # last segment after _
+        name = filename.rsplit(".", 1)[0]
+        part = name.rsplit("_", 1)[-1]
         try:
             w, h = part.lower().split("x")
             return int(w), int(h)
         except Exception:
             return None, None
 
-    def resolve(self, filename: str) -> str:
+    def resolve(self, filename: str):
         """Return full SD path for a filename, or None if not found."""
+        if not self._sd_mounted:
+            return None
         if filename in self._index:
             return self._index[filename]
-        # Try treating filename as a relative path directly
         full = _IMG_ROOT + "/" + filename
         try:
             os.stat(full)
@@ -108,45 +119,43 @@ class AssetManager:
         except OSError:
             return None
 
-    async def load_image(self, filename: str) -> bytearray | None:
+    async def load_image(self, filename: str):
         """
         Load a raw RGB565 bitmap into a bytearray.
-        Returns None if the file is not found.
+        Returns None if SD not mounted or file not found.
         Caches small images in RAM for fast re-use.
         """
+        if not self._sd_mounted:
+            return None
         path = self.resolve(filename)
         if path is None:
             print(f"[assets] not found: {filename}")
             return None
-
         if path in self._cache:
             return self._cache[path]
-
         try:
-            size = os.stat(path)[6]   # file size in bytes
-            buf = bytearray(size)
-            # Read in chunks to yield to other tasks
+            size = os.stat(path)[6]
+            buf  = bytearray(size)
             with open(path, "rb") as f:
-                mv = memoryview(buf)
+                mv     = memoryview(buf)
                 offset = 0
-                chunk = 2048
                 while offset < size:
-                    n = f.readinto(mv[offset:offset+chunk])
+                    n = f.readinto(mv[offset:offset+2048])
                     if n == 0:
                         break
                     offset += n
-                    await asyncio.sleep_ms(0)   # yield
-
+                    await asyncio.sleep_ms(0)
             if size <= self._cache_limit:
                 self._cache[path] = buf
-
             return buf
         except OSError as e:
             print(f"[assets] load error {filename}: {e}")
             return None
 
-    def load_image_sync(self, filename: str) -> bytearray | None:
-        """Blocking load — use only in init sequences, not during gameplay."""
+    def load_image_sync(self, filename: str):
+        """Blocking load — use only in init sequences."""
+        if not self._sd_mounted:
+            return None
         path = self.resolve(filename)
         if path is None:
             return None
@@ -154,7 +163,7 @@ class AssetManager:
             return self._cache[path]
         try:
             size = os.stat(path)[6]
-            buf = bytearray(size)
+            buf  = bytearray(size)
             with open(path, "rb") as f:
                 f.readinto(buf)
             if size <= self._cache_limit:
@@ -164,11 +173,7 @@ class AssetManager:
             return None
 
     def evict_cache(self, prefix: str = None):
-        """
-        Free cached images.
-        prefix: evict only paths starting with this string (e.g. a game id).
-        No prefix: evict everything except 'shared/'.
-        """
+        """Free cached images. No prefix = evict all except shared/."""
         keys = list(self._cache.keys())
         for k in keys:
             if prefix:
@@ -182,22 +187,25 @@ class AssetManager:
 
     @staticmethod
     def sfx_path(filename: str) -> str:
-        return "sfx/" + filename
+        return _AUD_ROOT + "/sfx/" + filename
 
     @staticmethod
     def voice_path(filename: str) -> str:
-        return "voice/" + filename
+        return _AUD_ROOT + "/voice/" + filename
 
     @staticmethod
     def music_path(filename: str) -> str:
-        return "music/" + filename
+        return _AUD_ROOT + "/music/" + filename
 
-    # ── Listing helpers (for game builders) ─────────────────────
+    # ── Listing helpers ──────────────────────────────────────────
 
     def list_game_images(self, game_id: str) -> list:
-        """Return all indexed filenames belonging to a game folder."""
-        prefix = game_id + "/"
-        return [v for k, v in self._index.items() if prefix in v]
+        return [v for k, v in self._index.items()
+                if game_id + "/" in v]
+
+    @property
+    def sd_available(self) -> bool:
+        return self._sd_mounted
 
 
 assets = AssetManager()

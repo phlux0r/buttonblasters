@@ -1,15 +1,15 @@
-# core/kernel.py
-# AppKernel — the central coordinator.
+# core/kernel.py — Button Blasters
+# AppKernel — central coordinator.
 #
-# Responsibilities:
-#   - Boot sequence: init all hardware in the right order
-#   - Run the asyncio task tree
-#   - Cycle between the menu and games
-#   - Handle idle timeout and battery warning
-#   - Persist high scores to flash (scores.json on SD card)
-#
-# The kernel never knows what's inside a game — it just calls
-# load() / run() / unload() and receives a GameResult.
+# Boot sequence:
+#   1. All displays init (SPI bus, ILI9488 + 4× ST7789)
+#   2. Touch controller (I2C — independent of SPI)
+#   3. SD card mount (deferred — graceful if not available)
+#   4. Asset index build (skipped if no SD)
+#   5. Persistent scores load (skipped if no SD)
+#   6. LED startup animation (skipped if LEDs not wired)
+#   7. Startup sound (skipped if audio not wired)
+#   8. Menu build + hand-off to asyncio event loop
 
 import asyncio
 import json
@@ -27,66 +27,65 @@ from drivers.haptic import haptic
 from drivers.assets import assets
 import config
 
-
 _SCORES_PATH = "/sd/scores.json"
 
 
 class AppKernel:
 
     def __init__(self):
-        self._menu        = None
-        self._scores      = {}
-        self._last_input  = time.ticks_ms()
-        self._dimmed      = False
+        self._menu       = None
+        self._scores     = {}
+        self._last_input = time.ticks_ms()
+        self._dimmed     = False
 
     # ── Boot sequence ────────────────────────────────────────────
 
     async def init(self):
-        """
-        Initialise all hardware.  Must complete before asyncio tasks start
-        doing display work.  Order matters — SPI bus first, then displays,
-        then SD card (shares SPI), then everything else.
-        """
         print("[kernel] boot start")
 
-        # 1. Displays (blocking — SPI bus claimed exclusively at boot)
+        # 1. Displays — blocking, SPI bus claimed exclusively
         display.init_all()
-        await display.show_splash("BUTTON", "BLASTERS", bg_color=rgb(20,10,60))
+        await display.show_splash("BUTTON", "BLASTERS",
+                                  bg_color=rgb(20, 10, 60))
 
-        # 1b. Touch controller (I²C — independent of SPI, init now)
+        # 2. Touch controller
         try:
             touch.init_blocking()
             buttons.attach_touch(touch)
-            print("[kernel] touch controller ready")
+            print("[kernel] touch ready")
         except Exception as e:
-            print(f"[kernel] touch init failed (continuing without touch): {e}")
+            print(f"[kernel] touch init failed (continuing): {e}")
 
-        # 2. SD card + asset index
-        ok = assets.mount_sd()
-        if ok:
+        # 3. SD card mount (deferred — non-fatal)
+        sd_ok = assets.mount_sd()
+        if sd_ok:
             assets.build_index()
+            self._load_scores()
         else:
-            await display.show_splash("NO SD CARD", "insert & reboot")
-            await asyncio.sleep_ms(3000)
+            await display.show_no_sd_warning()
+            await asyncio.sleep_ms(2000)
+            # Continue without SD — games with no assets still work
 
-        # 3. Load persistent scores
-        self._load_scores()
+        # 4. LEDs startup (skipped if not wired)
+        if leds.ready:
+            leds.start_effect(leds.chase(80, 40, 255))
+            await asyncio.sleep_ms(800)
+            leds.off()
+        else:
+            await asyncio.sleep_ms(200)
 
-        # 4. LED startup animation
-        leds.start_effect(leds.chase(80, 40, 255))
-        await asyncio.sleep_ms(800)
-        leds.off()
-
-        # 5. Play startup sound
+        # 5. Startup sound (skipped if not wired)
         await audio.play_sfx("startup.wav")
 
         # 6. Build menu
         self._menu = Menu(REGISTRY)
         self._menu._scores = {
-            gid: d.get("score", 0) for gid, d in self._scores.items()
+            gid: d.get("score", 0)
+            for gid, d in self._scores.items()
         }
         self._menu._stars = {
-            gid: d.get("stars", 0) for gid, d in self._scores.items()
+            gid: d.get("stars", 0)
+            for gid, d in self._scores.items()
         }
 
         print(f"[kernel] boot complete — {len(REGISTRY)} games registered")
@@ -94,30 +93,27 @@ class AppKernel:
     # ── Main event loop ──────────────────────────────────────────
 
     async def run(self):
-        """Start the button listener and the main game-menu loop."""
-        # Background tasks that run for the lifetime of the app
         asyncio.create_task(buttons.run())
-        asyncio.create_task(buttons.run_touch())   # touch event task
+        asyncio.create_task(buttons.run_touch())
         asyncio.create_task(self._idle_watchdog())
 
         while True:
-            # ── Menu ─────────────────────────────────────────────
+            # ── Menu ─────────────────────────────────────────
             game_cls = await self._menu.run()
             self._touch()
 
-            # ── Instantiate game ─────────────────────────────────
+            # ── Instantiate + transition ─────────────────────
             game = game_cls(display, audio, leds, buttons, assets)
-
-            # ── Transition in ────────────────────────────────────
             await self._transition_to_game(game)
 
-            # ── Load assets ──────────────────────────────────────
+            # ── Load assets ──────────────────────────────────
             print(f"[kernel] loading {game.GAME_ID}")
-            leds.start_effect(leds.chase(100, 200, 100))
+            if leds.ready:
+                leds.start_effect(leds.chase(100, 200, 100))
             await game.load()
             leds.off()
 
-            # ── Play ─────────────────────────────────────────────
+            # ── Play ─────────────────────────────────────────
             print(f"[kernel] running {game.GAME_ID}")
             try:
                 result = await game.run()
@@ -127,36 +123,34 @@ class AppKernel:
 
             self._touch()
 
-            # ── Save result ──────────────────────────────────────
+            # ── Save + feedback ──────────────────────────────
             self._save_result(game.GAME_ID, result)
-            self._menu.update_result(game.GAME_ID, result.score, result.stars)
+            self._menu.update_result(game.GAME_ID,
+                                     result.score, result.stars)
 
-            # ── Post-game feedback ───────────────────────────────
             if result.completed:
                 await self._game_complete_sequence(result)
 
-            # ── Unload ───────────────────────────────────────────
+            # ── Unload ───────────────────────────────────────
             await game.unload()
             print(f"[kernel] unloaded {game.GAME_ID}")
 
     # ── Transitions ──────────────────────────────────────────────
 
     async def _transition_to_game(self, game):
-        """Brief animated transition between menu and game."""
         await audio.play_sfx("game_start.wav")
-        leds.start_effect(leds.flash(80, 80, 255, count=2))
-        await display.show_splash(game.TITLE, "GET READY!", rgb(20, 60, 20))
+        if leds.ready:
+            leds.start_effect(leds.flash(80, 80, 255, count=2))
+        await display.show_splash(game.TITLE, "GET READY!",
+                                  rgb(20, 60, 20))
         await asyncio.sleep_ms(1200)
 
     async def _game_complete_sequence(self, result: GameResult):
-        """Show score and stars after a completed game."""
-        leds.start_effect(leds.level_up())
-        stars_str = "★" * result.stars + "☆" * (3 - result.stars)
-        await display.show_splash(
-            f"SCORE {result.score}",
-            stars_str,
-            rgb(20, 60, 20),
-        )
+        if leds.ready:
+            leds.start_effect(leds.level_up())
+        stars_str = ("*" * result.stars) + ("-" * (3 - result.stars))
+        await display.show_splash(f"SCORE {result.score}",
+                                  stars_str, rgb(20, 60, 20))
         if result.high_score:
             await audio.play_voice("new_high_score.wav")
         else:
@@ -166,31 +160,26 @@ class AppKernel:
     # ── Idle watchdog ────────────────────────────────────────────
 
     async def _idle_watchdog(self):
-        """Dim displays after inactivity; return to menu after longer idle."""
         while True:
             await asyncio.sleep_ms(5000)
-            idle_s = time.ticks_diff(time.ticks_ms(), self._last_input) // 1000
-
+            idle_s = (time.ticks_diff(time.ticks_ms(),
+                                      self._last_input) // 1000)
             if idle_s >= config.SCREEN_DIM_S and not self._dimmed:
-                # Dim the LED strip to save battery
-                leds.set_brightness(0.05)
+                if leds.ready:
+                    leds.set_brightness(0.05)
                 self._dimmed = True
-                print("[kernel] display dimmed")
-
+                print("[kernel] idle — dimmed")
             if idle_s >= config.GAME_RETURN_IDLE_S:
-                # Nothing we can do here to interrupt the game directly —
-                # but we signal via a flag that game loops should poll.
-                # (Games call self.check_back() which also checks this.)
-                self._last_input = time.ticks_ms()   # reset to avoid spam
+                self._last_input = time.ticks_ms()
 
     def _touch(self):
-        """Record user activity — resets idle timer."""
         self._last_input = time.ticks_ms()
         if self._dimmed:
-            leds.set_brightness(config.LED_BRIGHTNESS)
+            if leds.ready:
+                leds.set_brightness(config.LED_BRIGHTNESS)
             self._dimmed = False
 
-    # ── Score persistence ────────────────────────────────────────
+    # ── Score persistence ─────────────────────────────────────────
 
     def _load_scores(self):
         try:
@@ -201,6 +190,8 @@ class AppKernel:
             self._scores = {}
 
     def _save_scores(self):
+        if not assets.sd_available:
+            return
         try:
             with open(_SCORES_PATH, "w") as f:
                 json.dump(self._scores, f)
@@ -208,15 +199,15 @@ class AppKernel:
             print("[kernel] score save failed:", e)
 
     def _save_result(self, game_id: str, result: GameResult):
-        entry = self._scores.get(game_id, {"score": 0, "stars": 0})
+        entry   = self._scores.get(game_id, {"score": 0, "stars": 0})
         changed = False
         if result.score > entry.get("score", 0):
-            entry["score"] = result.score
+            entry["score"]    = result.score
             result.high_score = True
-            changed = True
+            changed           = True
         if result.stars > entry.get("stars", 0):
             entry["stars"] = result.stars
-            changed = True
+            changed        = True
         self._scores[game_id] = entry
         if changed:
             self._save_scores()

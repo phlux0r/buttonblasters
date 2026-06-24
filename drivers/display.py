@@ -1,250 +1,312 @@
-# drivers/display.py
-# Async display driver for:
-#   - ST7796   480×320  (4.0" main screen — replaced ILI9488 rev 1.1)
-#   - ST7789   240×280  (×4 button screens)
+# drivers/display.py — Button Blasters
+# Confirmed-working display drivers
 #
-# ST7796 key differences vs old ILI9488:
-#   - Natively RGB565 over SPI — no 18-bit expansion loop needed
-#   - Faster SPI (up to 80 MHz; we run 62 MHz)
-#   - Different init sequence (PGAMCTRL/NGAMCTRL, VCMPCTL, DOCA)
-#   - Same set_window / blit API as before — DisplayManager unchanged
+# ILI9488  4.0" IPS 320×480  — main screen
+# ST7789   1.69" 240×300     — ×4 button screens
+#
+# Every init value here is hardware-confirmed through bring-up tests.
+# Do not "simplify" the ST7789 init — the full LovyanGFX sequence is
+# required to activate the frame buffer on these modules.
 
 import asyncio
+import time
 from machine import Pin
 import config
 from drivers.spi_bus import spi_bus
 
 
 def _pulse_reset(rst_pin: Pin):
-    """Hard-reset a display (blocking — called at boot only)."""
-    import time
+    """Hard-reset a display. Blocking — call at boot only."""
     rst_pin.value(0)
-    time.sleep_ms(10)
+    time.sleep_ms(20)
     rst_pin.value(1)
     time.sleep_ms(120)
 
 
-# ── ST7796 — 4.0" main screen ────────────────────────────────────────────────
-# Init sequence validated against ST7796S datasheet and common module configs.
-# 0xFF in the stream = delay 150 ms.
+# ── ILI9488 — 4.0" IPS main display ─────────────────────────────
 
-_ST7796_INIT = bytes([
-    0x01, 0,                    # SW reset
-    0xFF, 0,                    # delay 150 ms
-    0x11, 0,                    # sleep out
-    0xFF, 0,                    # delay 150 ms
+class ILI9488:
+    """
+    Async driver for the ILI9488 4.0" IPS main display.
 
-    0xF0, 1, 0xC3,              # command set enable (unlock)
-    0xF0, 1, 0x96,              # command set enable (unlock)
-
-    0x36, 1, 0x48,              # MADCTL: landscape, BGR colour order
-    0x3A, 1, 0x05,              # pixel format: 16-bit RGB565
-
-    0xB4, 1, 0x01,              # inversion control: 2-dot inversion
-    0xB7, 1, 0xC6,              # entry mode set
-
-    # Frame rate — 60 Hz at normal mode
-    0xB1, 2, 0x80, 0x10,
-
-    # Display function control
-    0xB6, 3, 0x80, 0x02, 0x3B,
-
-    # Power control
-    0xC0, 2, 0x80, 0x64,
-    0xC1, 1, 0x13,
-    0xC2, 1, 0xA7,
-
-    # VCOM
-    0xC5, 1, 0x09,
-
-    # Positive gamma
-    0xE0, 14,
-        0xF0, 0x06, 0x0B, 0x07, 0x06, 0x05, 0x2E, 0x33,
-        0x47, 0x3A, 0x17, 0x16, 0x2E, 0x31,
-
-    # Negative gamma
-    0xE1, 14,
-        0xF0, 0x09, 0x0D, 0x09, 0x08, 0x23, 0x2E, 0x33,
-        0x46, 0x38, 0x13, 0x13, 0x2C, 0x32,
-
-    0xF0, 1, 0x3C,              # command set disable
-    0xF0, 1, 0x69,              # command set disable
-
-    0x13, 0,                    # normal display mode on
-    0x29, 0,                    # display on
-])
-
-
-class ST7796:
-    """Async driver for the ST7796 4.0\" main display.
-
-    API is identical to the old ILI9488 class so DisplayManager needs
-    no changes — just swap the import and class name.
+    Critical confirmed facts:
+      - IPS panel: requires 0x21 (inversion ON) — missing = blank screen
+      - VCOM = 0x4D — supplier confirmed, wrong value = no image
+      - Pixel format: 18-bit RGB666 (0x66) — not 16-bit
+      - Per-byte CS toggle required for every individual byte
+      - Sleep out (0x11) FIRST with 120ms delay before other commands
+      - LED/backlight wired directly to 3.3V — no GPIO needed
+      - SPI at 10MHz confirmed stable
     """
 
     def __init__(self):
         self._cs  = Pin(config.PIN_CS_MAIN,  Pin.OUT, value=1)
         self._dc  = Pin(config.PIN_DC_MAIN,  Pin.OUT, value=1)
         self._rst = Pin(config.PIN_RST_MAIN, Pin.OUT, value=1)
-        self.w    = config.MAIN_W    # 480
-        self.h    = config.MAIN_H    # 320
+        self.w    = config.MAIN_W    # 320
+        self.h    = config.MAIN_H    # 480
 
     # ── Boot init (blocking) ─────────────────────────────────────
 
     def init_blocking(self):
         """Call once at boot before asyncio starts."""
         _pulse_reset(self._rst)
-        self._send_init_seq(_ST7796_INIT)
+        self._run_init()
 
-    def _send_init_seq(self, seq):
-        import time
-        i = 0
+    def _wc(self, cmd):
+        """Write command byte — CS toggle per byte (ILI9488 requirement)."""
+        self._dc.value(0)
         self._cs.value(0)
-        while i < len(seq):
-            cmd = seq[i]; i += 1
-            if cmd == 0xFF:          # delay marker
-                time.sleep_ms(150)
-                continue
-            n = seq[i]; i += 1
-            self._dc.value(0)
-            spi_bus.spi.write(bytes([cmd]))
-            if n:
-                self._dc.value(1)
-                spi_bus.spi.write(bytes(seq[i:i+n]))
-                i += n
+        spi_bus.spi.write(bytes([cmd]))
         self._cs.value(1)
 
-    # ── Low-level window + pixel ops ─────────────────────────────
+    def _wd(self, *data):
+        """Write data bytes — CS toggle per byte."""
+        self._dc.value(1)
+        for b in data:
+            self._cs.value(0)
+            spi_bus.spi.write(bytes([b]))
+            self._cs.value(1)
 
-    async def set_window(self, x0, y0, x1, y1):
-        """Set address window. Must be called inside a spi_bus.device context."""
-        self._dc.value(0); spi_bus.write(b'\x2A')
-        self._dc.value(1); spi_bus.write(bytes([x0>>8, x0&0xFF, x1>>8, x1&0xFF]))
-        self._dc.value(0); spi_bus.write(b'\x2B')
-        self._dc.value(1); spi_bus.write(bytes([y0>>8, y0&0xFF, y1>>8, y1&0xFF]))
-        self._dc.value(0); spi_bus.write(b'\x2C')
+    def _run_init(self):
+        """Confirmed working ILI9488 IPS init sequence."""
+        # Sleep out FIRST — required before any other command
+        self._wc(0x11)
+        time.sleep_ms(120)
+
+        # Pixel format: 18-bit RGB666
+        self._wc(0x3A); self._wd(0x66)
+
+        # VCOM — supplier confirmed 0x4D is critical
+        self._wc(0xC5); self._wd(0x00, 0x4D, 0x80)
+
+        # Display inversion ON — required for IPS panel
+        self._wc(0x21)
+
+        # MADCTL — portrait mode, BGR colour order
+        self._wc(0x36); self._wd(0x48)
+
+        # Display ON
+        self._wc(0x29)
+        time.sleep_ms(20)
+
+    # ── Window + pixel ops ───────────────────────────────────────
+
+    def _set_window_blocking(self, x0, y0, x1, y1):
+        """Set address window. Blocking version for use inside device context."""
+        self._wc(0x2A); self._wd(x0>>8, x0&0xFF, x1>>8, x1&0xFF)
+        self._wc(0x2B); self._wd(y0>>8, y0&0xFF, y1>>8, y1&0xFF)
+        self._wc(0x2C)
         self._dc.value(1)
 
     # ── Fill ─────────────────────────────────────────────────────
 
     async def fill(self, color565: int, x=0, y=0, w=None, h=None):
-        """Fill a rectangle with an RGB565 colour.
-        ST7796 is natively 16-bit — no conversion needed (unlike old ILI9488).
         """
-        w = w or self.w; h = h or self.h
-        hi = color565 >> 8
-        lo = color565 & 0xFF
-        chunk = bytes([hi, lo] * 64)     # 128-byte write chunk = 64 pixels
+        Fill a rectangle. Accepts RGB565 colour — converts to RGB666
+        internally (ILI9488 native format over SPI).
+        """
+        w = w or self.w
+        h = h or self.h
+        # Expand RGB565 → RGB666 (pad lower bits)
+        r = (color565 >> 8) & 0xF8
+        g = (color565 >> 3) & 0xFC
+        b = (color565 << 3) & 0xF8
+        px = bytes([r, g, b])
+        chunk = px * 21   # 63 bytes = 21 pixels per write
         total = w * h
+
         async with spi_bus.device(self._cs, freq=config.SPI_FREQ_DISPLAY):
-            await self.set_window(x, y, x+w-1, y+h-1)
-            for _ in range(total // 64):
+            self._set_window_blocking(x, y, x+w-1, y+h-1)
+            for _ in range(total // 21):
                 spi_bus.write(chunk)
-            rem = total % 64
+            rem = total % 21
             if rem:
-                spi_bus.write(bytes([hi, lo] * rem))
+                spi_bus.write(px * rem)
+
+    async def fill_rgb(self, r: int, g: int, b: int,
+                       x=0, y=0, w=None, h=None):
+        """Fill with raw RGB values 0-255. Slightly faster than fill()."""
+        w = w or self.w
+        h = h or self.h
+        px = bytes([r & 0xF8, g & 0xFC, b & 0xF8])
+        chunk = px * 21
+        total = w * h
+
+        async with spi_bus.device(self._cs, freq=config.SPI_FREQ_DISPLAY):
+            self._set_window_blocking(x, y, x+w-1, y+h-1)
+            for _ in range(total // 21):
+                spi_bus.write(chunk)
+            rem = total % 21
+            if rem:
+                spi_bus.write(px * rem)
 
     # ── Blit ─────────────────────────────────────────────────────
 
-    async def blit_rgb565(self, buf: memoryview, x=0, y=0, w=None, h=None):
-        """Write a raw RGB565 buffer to the display.
-        Direct write — no per-pixel conversion required (ST7796 native format).
-        Significantly faster than the old ILI9488 18-bit expansion path.
+    async def blit_rgb565(self, buf: memoryview, x=0, y=0,
+                          w=None, h=None):
         """
-        w = w or self.w; h = h or self.h
+        Write a raw RGB565 buffer to the display.
+        Converts each pixel to RGB666 on the fly (ILI9488 requirement).
+        Yields to asyncio between 4KB chunks.
+        """
+        w = w or self.w
+        h = h or self.h
+        total = w * h
+
         async with spi_bus.device(self._cs, freq=config.SPI_FREQ_DISPLAY):
-            await self.set_window(x, y, x+w-1, y+h-1)
-            # Write in 4 KB chunks to yield cooperative slices to other tasks
-            CHUNK = 4096
-            mv = memoryview(buf) if not isinstance(buf, memoryview) else buf
+            self._set_window_blocking(x, y, x+w-1, y+h-1)
+            CHUNK = 256   # pixels per iteration
+            out = bytearray(CHUNK * 3)
             offset = 0
-            total_bytes = w * h * 2
-            while offset < total_bytes:
-                end = min(offset + CHUNK, total_bytes)
-                spi_bus.write(mv[offset:end])
-                offset = end
-                if offset < total_bytes:
-                    await asyncio.sleep_ms(0)   # yield between chunks
+            while offset < total:
+                count = min(CHUNK, total - offset)
+                for i in range(count):
+                    pi = (offset + i) * 2
+                    hi = buf[pi]; lo = buf[pi+1]
+                    out[i*3]   = hi & 0xF8
+                    out[i*3+1] = ((hi << 5) | (lo >> 3)) & 0xFC
+                    out[i*3+2] = (lo << 3) & 0xF8
+                spi_bus.write(memoryview(out)[:count*3])
+                offset += count
+                if offset < total:
+                    await asyncio.sleep_ms(0)
 
     async def clear(self):
         await self.fill(0x0000)
 
 
-# ── ST7789 — button screens (unchanged from rev 1.0) ────────────────────────
+# ── ST7789 — button displays (×4) ────────────────────────────────
 
-_ST7789_INIT = bytes([
-    0x01, 0,            # SW reset
-    0xFF, 0,            # delay
-    0x11, 0,            # sleep out
-    0xFF, 0,            # delay
-    0x3A, 1, 0x05,      # pixel format RGB565
-    0x36, 1, 0x00,      # MADCTL
-    0x21, 0,            # display inversion on (most ST7789 modules need this)
-    0x13, 0,            # normal display mode
-    0x29, 0,            # display on
-])
+# Shared BLK pin — must be driven HIGH from GPIO.
+# Tying to 3.3V does NOT work on these modules.
+_blk_pin = None
+
+def _ensure_blk():
+    global _blk_pin
+    if _blk_pin is None:
+        _blk_pin = Pin(config.PIN_BLK_BTN, Pin.OUT, value=1)
 
 
 class ST7789:
-    """Async driver for a single ST7789 1.69\" button display."""
+    """
+    Async driver for a single ST7789 1.69" button display.
+
+    Critical confirmed facts:
+      - BLK pin MUST be driven HIGH from GPIO (GP13) — not 3.3V rail
+      - Full LovyanGFX power init required — minimal init won't work
+      - Working window: 240×300 (fills full physical screen)
+      - DC BTN-0 uses GP2 (GP5 is dead on this board)
+      - SPI at 10MHz confirmed stable
+    """
 
     def __init__(self, index: int):
+        _ensure_blk()
         self._index = index
         self._cs  = Pin(config.PIN_CS_BTN[index],  Pin.OUT, value=1)
         self._dc  = Pin(config.PIN_DC_BTN[index],  Pin.OUT, value=1)
-        self._rst = Pin(config.PIN_RST_BTN, Pin.OUT, value=1) if index == 0 else None
-        self.w    = config.BTN_W
-        self.h    = config.BTN_H
+        # Only BTN-0 owns the shared RST pin object
+        self._rst = (Pin(config.PIN_RST_BTN, Pin.OUT, value=1)
+                     if index == 0 else None)
+        self.w    = config.BTN_W    # 240
+        self.h    = config.BTN_H    # 300
+
+    # ── Boot init (blocking) ─────────────────────────────────────
 
     def init_blocking(self):
-        if self._rst:
+        """Call once at boot. BTN-0 performs the shared reset."""
+        if self._rst is not None:
             _pulse_reset(self._rst)
-        self._send_init_seq(_ST7789_INIT)
+        self._run_init()
 
-    def _send_init_seq(self, seq):
-        import time
-        i = 0
+    def _wc(self, cmd):
+        self._dc.value(0)
         self._cs.value(0)
-        while i < len(seq):
-            cmd = seq[i]; i += 1
-            if cmd == 0xFF:
-                time.sleep_ms(120)
-                continue
-            n = seq[i]; i += 1
-            self._dc.value(0)
-            spi_bus.spi.write(bytes([cmd]))
-            if n:
-                self._dc.value(1)
-                spi_bus.spi.write(bytes(seq[i:i+n]))
-                i += n
+        spi_bus.spi.write(bytes([cmd]))
         self._cs.value(1)
 
-    async def set_window(self, x0, y0, x1, y1):
-        self._dc.value(0); spi_bus.write(b'\x2A')
-        self._dc.value(1); spi_bus.write(bytes([x0>>8,x0&0xFF,x1>>8,x1&0xFF]))
-        self._dc.value(0); spi_bus.write(b'\x2B')
-        self._dc.value(1); spi_bus.write(bytes([y0>>8,y0&0xFF,y1>>8,y1&0xFF]))
-        self._dc.value(0); spi_bus.write(b'\x2C')
+    def _wd(self, *data):
+        self._dc.value(1)
+        self._cs.value(0)
+        spi_bus.spi.write(bytes(data))
+        self._cs.value(1)
+
+    def _run_init(self):
+        """Full LovyanGFX-style init — required for frame buffer activation."""
+        self._wc(0x01); time.sleep_ms(150)    # SW reset
+        self._wc(0x11); time.sleep_ms(255)    # sleep out
+        self._wc(0x3A); self._wd(0x05)        # RGB565
+        self._wc(0x36); self._wd(0x00)        # MADCTL
+        self._wc(0xB2); self._wd(0x0C,0x0C,0x00,0x33,0x33)
+        self._wc(0xB7); self._wd(0x35)
+        self._wc(0xBB); self._wd(0x19)
+        self._wc(0xC0); self._wd(0x2C)
+        self._wc(0xC2); self._wd(0x01)
+        self._wc(0xC3); self._wd(0x12)
+        self._wc(0xC4); self._wd(0x20)
+        self._wc(0xC6); self._wd(0x0F)
+        self._wc(0xD0); self._wd(0xA4,0xA1)
+        self._wc(0xE0); self._wd(0xD0,0x04,0x0D,0x11,0x13,0x2B,
+                                  0x3F,0x54,0x4C,0x18,0x0D,0x0B,0x1F,0x23)
+        self._wc(0xE1); self._wd(0xD0,0x04,0x0C,0x11,0x13,0x2C,
+                                  0x3F,0x44,0x51,0x2F,0x1F,0x1F,0x20,0x23)
+        self._wc(0x21)                         # display inversion ON
+        self._wc(0x13); time.sleep_ms(10)      # normal display mode
+        self._wc(0x29); time.sleep_ms(255)     # display ON
+
+    # ── Window op ────────────────────────────────────────────────
+
+    def _set_window_blocking(self, x0, y0, x1, y1):
+        self._wc(0x2A); self._wd(x0>>8, x0&0xFF, x1>>8, x1&0xFF)
+        self._wc(0x2B); self._wd(y0>>8, y0&0xFF, y1>>8, y1&0xFF)
+        self._wc(0x2C)
         self._dc.value(1)
 
+    # ── Fill ─────────────────────────────────────────────────────
+
     async def fill(self, color565: int, x=0, y=0, w=None, h=None):
-        w = w or self.w; h = h or self.h
-        hi, lo = color565 >> 8, color565 & 0xFF
+        """Fill a rectangle with an RGB565 colour (ST7789 native)."""
+        w = w or self.w
+        h = h or self.h
+        hi = color565 >> 8
+        lo = color565 & 0xFF
         chunk = bytes([hi, lo] * 64)
         total = w * h
-        async with spi_bus.device(self._cs):
-            await self.set_window(x, y, x+w-1, y+h-1)
+
+        async with spi_bus.device(self._cs, freq=config.SPI_FREQ_DISPLAY):
+            self._set_window_blocking(x, y, x+w-1, y+h-1)
             for _ in range(total // 64):
                 spi_bus.write(chunk)
             rem = total % 64
             if rem:
                 spi_bus.write(bytes([hi, lo] * rem))
 
-    async def blit_rgb565(self, buf: memoryview, x=0, y=0, w=None, h=None):
-        w = w or self.w; h = h or self.h
-        async with spi_bus.device(self._cs):
-            await self.set_window(x, y, x+w-1, y+h-1)
-            spi_bus.write(buf)
+    async def fill_rgb(self, r: int, g: int, b: int,
+                       x=0, y=0, w=None, h=None):
+        """Fill with raw RGB values 0-255."""
+        c = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+        await self.fill(c, x, y, w, h)
+
+    # ── Blit ─────────────────────────────────────────────────────
+
+    async def blit_rgb565(self, buf: memoryview, x=0, y=0,
+                          w=None, h=None):
+        """Write a raw RGB565 buffer. Direct — no conversion needed."""
+        w = w or self.w
+        h = h or self.h
+        total_bytes = w * h * 2
+
+        async with spi_bus.device(self._cs, freq=config.SPI_FREQ_DISPLAY):
+            self._set_window_blocking(x, y, x+w-1, y+h-1)
+            CHUNK = 4096
+            mv = memoryview(buf) if not isinstance(buf, memoryview) else buf
+            offset = 0
+            while offset < total_bytes:
+                end = min(offset + CHUNK, total_bytes)
+                spi_bus.write(mv[offset:end])
+                offset = end
+                if offset < total_bytes:
+                    await asyncio.sleep_ms(0)
 
     async def clear(self):
         await self.fill(0x0000)

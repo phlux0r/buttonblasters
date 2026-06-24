@@ -1,55 +1,52 @@
-# games/registry.py
-# Game registry — the single place to list all available games.
+# games/registry.py — Button Blasters
+# Single place to register all available games.
 #
-# To add a new game:
-#   1. Create games/<game_id>/game.py with a class subclassing BaseGame
-#   2. Import it here and add it to REGISTRY
+# To add a game:
+#   1. Create games/<game_id>/game.py subclassing BaseGame
+#   2. Uncomment (or add) the matching _register() line below
 #
-# The kernel reads REGISTRY to build the menu and instantiate games.
-# Order in the list = order in the menu carousel.
+# Order = menu carousel order.
 
-# ── Import games as they are created ────────────────────────────
-# Each import is wrapped in a try/except so a broken game doesn't
-# prevent the rest of the console from booting.
+REGISTRY = []
 
-REGISTRY = []   # populated below
 
 def _register(module_path, class_name):
     try:
-        parts = module_path.split(".")
         mod = __import__(module_path, fromlist=[class_name])
         cls = getattr(mod, class_name)
         REGISTRY.append(cls)
         print(f"[registry] registered: {cls.GAME_ID} — {cls.TITLE}")
     except Exception as e:
-        print(f"[registry] failed to load {module_path}.{class_name}: {e}")
+        print(f"[registry] failed to load {module_path}: {e}")
 
-# ── Register games here ──────────────────────────────────────────
-# Uncomment each line as you implement the game.
-# Format: _register("games.<folder>.game", "<ClassName>")
 
+# ── Uncomment as games are implemented ───────────────────────────
 # _register("games.match.game",    "ShapeMatchGame")
 # _register("games.memory.game",   "ButtonMemoryGame")
 # _register("games.bonk.game",     "StarBonkGame")
 # _register("games.count.game",    "CountItGame")
-# _register("games.colour.game",   "ColourQuestGame")
-# _register("games.rhythm.game",   "BeatAlongGame")
-# Add your new games here …
+# _register("games.sort.game",     "MagicSortGame")
+# _register("games.feed.game",     "FeedTheAnimalGame")
+# _register("games.bakery.game",   "MagicBakeryGame")
+# _register("games.shadow.game",   "ShadowMatchGame")
+# _register("games.garden.game",   "GardenGrowGame")
+# _register("games.adventure.game","MyBigDayOutGame")
 
 
-# ── Fallback: if no games registered, add a placeholder ─────────
+# ── Fallback placeholder ─────────────────────────────────────────
 if not REGISTRY:
     from core.game_base import BaseGame, GameResult
 
     class PlaceholderGame(BaseGame):
         GAME_ID     = "placeholder"
         TITLE       = "Coming Soon!"
-        DESCRIPTION = "New games are being added."
-        ICON_FILE   = "shared/placeholder_64x64.raw"
+        DESCRIPTION = "Games are being added."
+        ICON_FILE   = None
 
         async def load(self):
-            await self.display.fill_main(0x18C3)
-            await self.display.fill_all_btns(0x18C3)
+            from core.display_manager import rgb
+            await self.display.fill_main(rgb(20, 10, 60))
+            await self.display.fill_all_btns(rgb(20, 10, 60))
 
         async def run(self) -> GameResult:
             await self.display.show_splash("COMING", "SOON!")

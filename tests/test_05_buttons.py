@@ -32,7 +32,7 @@ BUTTONS = [
     {"name": "SCREEN-2", "gpio":  0, "type": "screen", "idx": 2},
     {"name": "SCREEN-3", "gpio":  1, "type": "screen", "idx": 3},
     {"name": "NAV-BACK", "gpio": 16, "type": "nav",    "idx": -1},
-    {"name": "NAV-NEXT", "gpio": 5, "type": "nav",    "idx": -1},
+    {"name": "NAV-NEXT", "gpio": 28, "type": "nav",    "idx": -1},
 ]
 
 DEBOUNCE_MS = 30
