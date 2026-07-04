@@ -157,8 +157,8 @@ class TouchDriver:
         return "swipe_down" if dy > 0 else "swipe_up"
 
     async def _post(self, touch_id: int, event: str):
-        if self._queue and not self._queue.full():
-            await self._queue.put((touch_id, event))
+        if self._queue is not None and not self._queue.full():
+            self._queue.put_nowait((touch_id, event))
 
 
 touch = TouchDriver()

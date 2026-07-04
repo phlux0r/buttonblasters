@@ -4,11 +4,32 @@
 # Strip powered from VBUS (5V).
 # 330Ω series resistor on data line.
 #
-# NUM_LEDS is read from config — update config.py if strip changes.
+# PIO program must be at module level for MicroPython compatibility.
 
 import asyncio
 import array
+import rp2
+from machine import Pin
 import config
+
+
+# ── PIO program — module level (required by MicroPython) ─────────
+@rp2.asm_pio(
+    sideset_init=rp2.PIO.OUT_LOW,
+    out_shiftdir=rp2.PIO.SHIFT_LEFT,
+    autopull=True,
+    pull_thresh=24,
+)
+def _ws2812_prog():
+    T1, T2, T3 = 2, 5, 3
+    wrap_target()
+    label("bitloop")
+    out(x, 1)           .side(0) [T3-1]
+    jmp(not_x, "zero")  .side(1) [T1-1]
+    jmp("bitloop")      .side(1) [T2-1]
+    label("zero")
+    nop()               .side(0) [T2-1]
+    wrap()
 
 
 def _hsv_to_rgb(h: int, s: float, v: float) -> tuple:
@@ -24,7 +45,6 @@ def _hsv_to_rgb(h: int, s: float, v: float) -> tuple:
 
 
 def _grb(r, g, b) -> int:
-    """WS2812B expects GRB byte order."""
     return (g << 16) | (r << 8) | b
 
 
@@ -48,28 +68,8 @@ class LedStrip:
             print("[leds] PIN_LED_STRIP not configured — LEDs disabled")
             return
         try:
-            import rp2
-            from machine import Pin
-
-            @rp2.asm_pio(
-                sideset_init=rp2.PIO.OUT_LOW,
-                out_shiftdir=rp2.PIO.SHIFT_LEFT,
-                autopull=True,
-                pull_thresh=24,
-            )
-            def _ws2812():
-                T1, T2, T3 = 2, 5, 3
-                wrap_target()
-                label("bitloop")
-                out(x, 1)           .side(0) [T3-1]
-                jmp(not_x, "zero")  .side(1) [T1-1]
-                jmp("bitloop")      .side(1) [T2-1]
-                label("zero")
-                nop()               .side(0) [T2-1]
-                wrap()
-
             self._sm = rp2.StateMachine(
-                0, _ws2812,
+                1, _ws2812_prog,
                 freq=8_000_000,
                 sideset_base=Pin(config.PIN_LED_STRIP),
             )
@@ -128,7 +128,7 @@ class LedStrip:
         self._effect_task = None
         self.off()
 
-    # ── Built-in effects ─────────────────────────────────────────
+    # ── Effects ──────────────────────────────────────────────────
 
     async def idle_rainbow(self):
         hue = 0

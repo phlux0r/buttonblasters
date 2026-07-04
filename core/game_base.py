@@ -14,15 +14,14 @@
 #   3. Register in games/registry.py
 
 import asyncio
-from dataclasses import dataclass
 
 
-@dataclass
 class GameResult:
-    score:      int   = 0
-    stars:      int   = 0
-    completed:  bool  = False
-    high_score: bool  = False
+    def __init__(self, score=0, stars=0, completed=False, high_score=False):
+        self.score      = score
+        self.stars      = stars
+        self.completed  = completed
+        self.high_score = high_score
 
 
 class BaseGame:

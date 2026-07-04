@@ -27,6 +27,42 @@ from machine import I2C, Pin
 import config
 from drivers.touch import TOUCH_TAP, TOUCH_LONG_PRESS, TOUCH_SWIPE
 
+
+class _SimpleQueue:
+    """Minimal async-compatible queue for MicroPython."""
+    def __init__(self, maxsize=32):
+        self._buf     = []
+        self._maxsize = maxsize
+        self._ev      = asyncio.Event()
+
+    def empty(self):
+        return len(self._buf) == 0
+
+    def full(self):
+        return len(self._buf) >= self._maxsize
+
+    def put_nowait(self, item):
+        if not self.full():
+            self._buf.append(item)
+            self._ev.set()
+
+    def get_nowait(self):
+        if self._buf:
+            return self._buf.pop(0)
+        raise IndexError("empty")
+
+    async def put(self, item):
+        while self.full():
+            await asyncio.sleep_ms(5)
+        self._buf.append(item)
+        self._ev.set()
+
+    async def get(self):
+        while not self._buf:
+            self._ev.clear()
+            await self._ev.wait()
+        return self._buf.pop(0)
+
 # Button ID constants
 BTN_SCREEN_0 = 0
 BTN_SCREEN_1 = 1
@@ -49,10 +85,14 @@ class ButtonManager:
     def __init__(self):
         self._i2c        = None
         self._mcp_addr   = config.MCP_I2C_ADDR
-        self._queue      = asyncio.Queue(maxsize=32)
+        self._queue      = None   # created in init_queue() after asyncio starts
         self._state      = [True] * 5   # True = not pressed
         self._pressed_at = [0]    * 5
         self._touch      = None
+
+    def init_queue(self):
+        """Create the queue. Must be called inside async context."""
+        self._queue = _SimpleQueue(32)
 
     def init_mcp(self, i2c: I2C):
         """
@@ -147,17 +187,21 @@ class ButtonManager:
 
     async def get(self):
         """Return next (id, event) — physical or touch."""
+        while self._queue is None:
+            await asyncio.sleep_ms(10)
         return await self._queue.get()
 
     async def get_press(self) -> int:
         """Block until a physical button press. Returns id 0-4."""
         while True:
-            btn, evt = await self._queue.get()
+            btn, evt = await self.get()
             if evt == "press" and btn <= 4:
                 return btn
 
     def clear(self):
         """Drain the queue — call when entering a new game/screen."""
+        if self._queue is None:
+            return
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -233,7 +277,7 @@ class ButtonManager:
         return btn_id <= 4
 
     async def _post(self, idx: int, event: str):
-        if not self._queue.full():
+        if self._queue and not self._queue.full():
             await self._queue.put((idx, event))
 
 

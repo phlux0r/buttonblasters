@@ -42,6 +42,9 @@ class AppKernel:
     async def init(self):
         print("[kernel] boot start")
 
+        # 0. Init asyncio queue (must be inside async context)
+        buttons.init_queue()
+
         # 1. Displays
         display.init_all()
         await display.show_splash("BUTTON", "BLASTERS",
