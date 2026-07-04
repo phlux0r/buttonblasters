@@ -1,13 +1,6 @@
-# drivers/spi_bus.py — Button Blasters
-# Shared SPI bus manager.
-#
-# All displays share SPI0. Only one device can be active at a time.
-# SpiBus serialises access via an asyncio.Lock so coroutines can
-# safely interleave display updates.
-#
-# Usage:
-#   async with spi_bus.device(cs_pin, freq=SPI_FREQ_DISPLAY):
-#       spi_bus.write(data)
+# drivers/spi_bus.py — Button Blasters v3.0
+# Shared SPI bus manager — SPI0, GP18/GP19/GP4.
+# Serialises access via asyncio.Lock.
 
 import asyncio
 from machine import SPI, Pin
@@ -15,7 +8,6 @@ import config
 
 
 class SpiBus:
-    """Singleton wrapper around SPI0 with cooperative locking."""
 
     def __init__(self):
         self.spi = SPI(
@@ -25,7 +17,7 @@ class SpiBus:
             mosi=Pin(config.PIN_MOSI),
             miso=Pin(config.PIN_MISO),
         )
-        self._lock = asyncio.Lock()
+        self._lock         = asyncio.Lock()
         self._current_freq = config.SPI_FREQ_DISPLAY
 
     def _set_freq(self, freq):
@@ -34,7 +26,6 @@ class SpiBus:
             self._current_freq = freq
 
     def device(self, cs_pin: Pin, freq: int = None):
-        """Context manager: acquire lock, assert CS, restore on exit."""
         return _DeviceContext(self, cs_pin,
                               freq or config.SPI_FREQ_DISPLAY)
 

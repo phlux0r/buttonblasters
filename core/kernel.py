@@ -1,15 +1,16 @@
-# core/kernel.py — Button Blasters
+# core/kernel.py — Button Blasters v3.0
 # AppKernel — central coordinator.
 #
 # Boot sequence:
-#   1. All displays init (SPI bus, ILI9488 + 4× ST7789)
-#   2. Touch controller (I2C — independent of SPI)
-#   3. SD card mount (deferred — graceful if not available)
-#   4. Asset index build (skipped if no SD)
-#   5. Persistent scores load (skipped if no SD)
-#   6. LED startup animation (skipped if LEDs not wired)
-#   7. Startup sound (skipped if audio not wired)
-#   8. Menu build + hand-off to asyncio event loop
+#   1. Displays (SPI bus, ILI9488 + 4× ST7789)
+#   2. Touch + I2C bus init — returns shared I2C instance
+#   3. MCP23008 button init (shares I2C with touch)
+#   4. Audio (I2S)
+#   5. LEDs (PIO)
+#   6. Haptic (GPIO — init LOW immediately to prevent float)
+#   7. SD card mount (deferred — non-fatal)
+#   8. Asset index + score load
+#   9. Startup effects + menu
 
 import asyncio
 import json
@@ -38,59 +39,72 @@ class AppKernel:
         self._last_input = time.ticks_ms()
         self._dimmed     = False
 
-    # ── Boot sequence ────────────────────────────────────────────
-
     async def init(self):
         print("[kernel] boot start")
 
-        # 1. Displays — blocking, SPI bus claimed exclusively
+        # 1. Displays
         display.init_all()
         await display.show_splash("BUTTON", "BLASTERS",
                                   bg_color=rgb(20, 10, 60))
 
-        # 2. Touch controller
+        # 2. Touch + shared I2C bus
         try:
-            touch.init_blocking()
+            i2c = touch.init_blocking()   # returns I2C instance
             buttons.attach_touch(touch)
             print("[kernel] touch ready")
         except Exception as e:
-            print(f"[kernel] touch init failed (continuing): {e}")
+            print(f"[kernel] touch init failed: {e}")
+            i2c = None
 
-        # 3. SD card mount (deferred — non-fatal)
+        # 3. MCP23008 buttons (share same I2C bus)
+        if i2c is not None:
+            try:
+                buttons.init_mcp(i2c)
+                print("[kernel] buttons ready via MCP23008")
+            except Exception as e:
+                print(f"[kernel] MCP23008 init failed: {e}")
+        else:
+            print("[kernel] skipping MCP23008 — no I2C bus")
+
+        # 4. Audio (already initialised at import — just confirm)
+        if audio.ready:
+            print("[kernel] audio ready")
+        else:
+            print("[kernel] audio not ready — check I2S wiring")
+
+        # 5. LEDs
+        if leds.ready:
+            leds.start_effect(leds.chase(80, 40, 255))
+            await asyncio.sleep_ms(600)
+            leds.off()
+        else:
+            print("[kernel] LEDs not ready")
+            await asyncio.sleep_ms(200)
+
+        # 6. Haptic — already initialised LOW at import
+        if haptic.ready:
+            print("[kernel] haptic ready")
+
+        # 7. SD card (deferred — non-fatal)
         sd_ok = assets.mount_sd()
         if sd_ok:
             assets.build_index()
             self._load_scores()
         else:
             await display.show_no_sd_warning()
-            await asyncio.sleep_ms(2000)
-            # Continue without SD — games with no assets still work
+            await asyncio.sleep_ms(1500)
 
-        # 4. LEDs startup (skipped if not wired)
-        if leds.ready:
-            leds.start_effect(leds.chase(80, 40, 255))
-            await asyncio.sleep_ms(800)
-            leds.off()
-        else:
-            await asyncio.sleep_ms(200)
-
-        # 5. Startup sound (skipped if not wired)
+        # 8. Startup sound
         await audio.play_sfx("startup.wav")
 
-        # 6. Build menu
+        # 9. Build menu
         self._menu = Menu(REGISTRY)
         self._menu._scores = {
-            gid: d.get("score", 0)
-            for gid, d in self._scores.items()
-        }
+            gid: d.get("score", 0) for gid, d in self._scores.items()}
         self._menu._stars = {
-            gid: d.get("stars", 0)
-            for gid, d in self._scores.items()
-        }
+            gid: d.get("stars", 0) for gid, d in self._scores.items()}
 
         print(f"[kernel] boot complete — {len(REGISTRY)} games registered")
-
-    # ── Main event loop ──────────────────────────────────────────
 
     async def run(self):
         asyncio.create_task(buttons.run())
@@ -98,22 +112,18 @@ class AppKernel:
         asyncio.create_task(self._idle_watchdog())
 
         while True:
-            # ── Menu ─────────────────────────────────────────
             game_cls = await self._menu.run()
             self._touch()
 
-            # ── Instantiate + transition ─────────────────────
             game = game_cls(display, audio, leds, buttons, assets)
             await self._transition_to_game(game)
 
-            # ── Load assets ──────────────────────────────────
             print(f"[kernel] loading {game.GAME_ID}")
             if leds.ready:
                 leds.start_effect(leds.chase(100, 200, 100))
             await game.load()
             leds.off()
 
-            # ── Play ─────────────────────────────────────────
             print(f"[kernel] running {game.GAME_ID}")
             try:
                 result = await game.run()
@@ -122,8 +132,6 @@ class AppKernel:
                 result = GameResult(score=0, completed=False)
 
             self._touch()
-
-            # ── Save + feedback ──────────────────────────────
             self._save_result(game.GAME_ID, result)
             self._menu.update_result(game.GAME_ID,
                                      result.score, result.stars)
@@ -131,11 +139,8 @@ class AppKernel:
             if result.completed:
                 await self._game_complete_sequence(result)
 
-            # ── Unload ───────────────────────────────────────
             await game.unload()
             print(f"[kernel] unloaded {game.GAME_ID}")
-
-    # ── Transitions ──────────────────────────────────────────────
 
     async def _transition_to_game(self, game):
         await audio.play_sfx("game_start.wav")
@@ -148,6 +153,8 @@ class AppKernel:
     async def _game_complete_sequence(self, result: GameResult):
         if leds.ready:
             leds.start_effect(leds.level_up())
+        if haptic.ready:
+            asyncio.create_task(haptic.triple_pulse())
         stars_str = ("*" * result.stars) + ("-" * (3 - result.stars))
         await display.show_splash(f"SCORE {result.score}",
                                   stars_str, rgb(20, 60, 20))
@@ -157,13 +164,11 @@ class AppKernel:
             await audio.play_voice("well_done.wav")
         await asyncio.sleep_ms(2500)
 
-    # ── Idle watchdog ────────────────────────────────────────────
-
     async def _idle_watchdog(self):
         while True:
             await asyncio.sleep_ms(5000)
-            idle_s = (time.ticks_diff(time.ticks_ms(),
-                                      self._last_input) // 1000)
+            idle_s = time.ticks_diff(
+                time.ticks_ms(), self._last_input) // 1000
             if idle_s >= config.SCREEN_DIM_S and not self._dimmed:
                 if leds.ready:
                     leds.set_brightness(0.05)
@@ -178,8 +183,6 @@ class AppKernel:
             if leds.ready:
                 leds.set_brightness(config.LED_BRIGHTNESS)
             self._dimmed = False
-
-    # ── Score persistence ─────────────────────────────────────────
 
     def _load_scores(self):
         try:

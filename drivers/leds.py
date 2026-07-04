@@ -1,12 +1,10 @@
-# drivers/leds.py — Button Blasters
-# WS2812B LED strip driver using RP2350 PIO.
+# drivers/leds.py — Button Blasters v3.0
+# WS2812B LED strip via RP2350 PIO — confirmed GP20.
+# Data line via 74AHCT125 level shifter (3.3V → 5V).
+# Strip powered from VBUS (5V).
+# 330Ω series resistor on data line.
 #
-# ⚠ NOT YET WIRED — PIN_LED_STRIP is None in config.
-#    All public methods are safe to call — they no-op silently
-#    until the hardware is connected and pin assigned.
-#
-# When wired via 74AHCT125 level shifter:
-#    set PIN_LED_STRIP in config.py — driver activates on next boot.
+# NUM_LEDS is read from config — update config.py if strip changes.
 
 import asyncio
 import array
@@ -14,7 +12,7 @@ import config
 
 
 def _hsv_to_rgb(h: int, s: float, v: float) -> tuple:
-    h = h % 360
+    h  = h % 360
     hi = h // 60
     f  = (h / 60) - hi
     p  = v * (1 - s)
@@ -24,22 +22,24 @@ def _hsv_to_rgb(h: int, s: float, v: float) -> tuple:
     r, g, b = lut[hi]
     return int(r*255), int(g*255), int(b*255)
 
+
 def _grb(r, g, b) -> int:
+    """WS2812B expects GRB byte order."""
     return (g << 16) | (r << 8) | b
 
 
 class LedStrip:
     """
     Async WS2812B controller via PIO state machine.
-    Safe to import and call when hardware is not yet wired.
+    Confirmed working: GP20 via 74AHCT125.
     """
 
     def __init__(self):
-        self._ready      = False
-        self._sm         = None
-        self._n          = config.NUM_LEDS
-        self._buf        = array.array('I', [0] * self._n)
-        self._brightness = config.LED_BRIGHTNESS
+        self._ready       = False
+        self._sm          = None
+        self._n           = config.NUM_LEDS
+        self._buf         = array.array('I', [0] * self._n)
+        self._brightness  = config.LED_BRIGHTNESS
         self._effect_task = None
         self._init_hardware()
 
@@ -75,23 +75,26 @@ class LedStrip:
             )
             self._sm.active(1)
             self._ready = True
-            print(f"[leds] WS2812B ready on GP{config.PIN_LED_STRIP}")
+            print(f"[leds] WS2812B ready  GP{config.PIN_LED_STRIP}  "
+                  f"{self._n} LEDs  brightness={self._brightness}")
         except Exception as e:
             print(f"[leds] PIO init failed: {e}")
 
     # ── Direct control ───────────────────────────────────────────
 
     def set_pixel(self, i: int, r: int, g: int, b: int):
-        if not self._ready: return
+        if not self._ready or i >= self._n:
+            return
         bri = self._brightness
         self._buf[i] = _grb(int(r*bri), int(g*bri), int(b*bri))
 
     def show(self):
-        if not self._ready: return
-        self._sm.put(self._buf, 8)
+        if self._ready:
+            self._sm.put(self._buf, 8)
 
     def set_all(self, r: int, g: int, b: int):
-        if not self._ready: return
+        if not self._ready:
+            return
         for i in range(self._n):
             self.set_pixel(i, r, g, b)
         self.show()
@@ -106,13 +109,24 @@ class LedStrip:
     def ready(self) -> bool:
         return self._ready
 
+    @property
+    def num_leds(self) -> int:
+        return self._n
+
     # ── Effect launcher ──────────────────────────────────────────
 
     def start_effect(self, coro):
-        if not self._ready: return
+        if not self._ready:
+            return
         if self._effect_task and not self._effect_task.done():
             self._effect_task.cancel()
         self._effect_task = asyncio.create_task(coro)
+
+    def stop_effect(self):
+        if self._effect_task and not self._effect_task.done():
+            self._effect_task.cancel()
+        self._effect_task = None
+        self.off()
 
     # ── Built-in effects ─────────────────────────────────────────
 
@@ -160,7 +174,8 @@ class LedStrip:
                 for i in range(self._n):
                     fade = (1.0 if i == pos else
                             0.15 if i == (pos-1) % self._n else 0.0)
-                    self.set_pixel(i, int(r*fade), int(g*fade), int(b*fade))
+                    self.set_pixel(i,
+                                   int(r*fade), int(g*fade), int(b*fade))
                 self.show()
                 pos = (pos + 1) % self._n
                 await asyncio.sleep_ms(60)

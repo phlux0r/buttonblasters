@@ -1,18 +1,14 @@
-# drivers/touch.py — Button Blasters
-# Capacitive touch driver — FT6236 on I2C-1 (GP26/GP27)
-#
-# INT pin (GP28) signals when touch data is ready — zero polling
-# overhead during idle. GP28 is TOUCH_INT only — not a nav button.
+# drivers/touch.py — Button Blasters v3.0
+# FT6236 capacitive touch driver — I2C-1, GP26/GP27, address 0x38.
+# INT pin GP28 signals touch data ready (TOUCH_INT only — not a button).
 #
 # Touch events are injected into the shared asyncio.Queue used by
 # ButtonManager, so game code uses buttons.get() for everything.
 #
-# Event IDs (extend the physical button ID space):
-#   TOUCH_TAP        = 10   clean tap — (x, y) in touch.pos
-#   TOUCH_LONG_PRESS = 11   held LONG_PRESS_MS ms
+# Event IDs:
+#   TOUCH_TAP        = 10   clean tap — pos in touch.pos
+#   TOUCH_LONG_PRESS = 11   held >= LONG_PRESS_MS
 #   TOUCH_SWIPE      = 12   direction string in touch.gesture
-#
-# Gesture strings: "swipe_left" | "swipe_right" | "swipe_up" | "swipe_down"
 
 import asyncio
 import time
@@ -23,7 +19,6 @@ TOUCH_TAP        = 10
 TOUCH_LONG_PRESS = 11
 TOUCH_SWIPE      = 12
 
-# FT6236 register map
 _FT_TD_STATUS = 0x02
 _FT_TOUCH1_XH = 0x03
 _FT_THRESHOLD = 0x80
@@ -31,34 +26,29 @@ _FT_CTRL      = 0x86
 
 
 class TouchDriver:
-    """
-    Async FT6236 touch driver.
-    Runs as a background task, posting events to the shared input queue.
-    Game code never calls this directly — use the ButtonManager API.
-    """
 
     def __init__(self):
         self._queue    = None   # injected by ButtonManager.attach_touch()
         self._i2c      = None
         self._int_pin  = None
         self._int_evt  = asyncio.Event()
-        self._addr     = config.TOUCH_I2C_ADDR  # 0x38
+        self._addr     = config.TOUCH_I2C_ADDR
 
-        # Public state — readable by game code via buttons.touch_pos
-        self.pos     = None   # (x, y) of last touch, or None
-        self.gesture = None   # last gesture string
+        self.pos     = None
+        self.gesture = None
 
-        # Internal gesture tracking
         self._touch_down = False
         self._down_pos   = (0, 0)
         self._down_time  = 0
         self._long_fired = False
         self._last_pos   = (0, 0)
 
-    # ── Init ─────────────────────────────────────────────────────
-
-    def init_blocking(self):
-        """Set up I²C and configure FT6236. Call before asyncio."""
+    def init_blocking(self) -> I2C:
+        """
+        Set up I²C and configure FT6236.
+        Returns the I2C instance so it can be shared with MCP23008.
+        Call before asyncio starts.
+        """
         self._i2c = I2C(
             config.I2C_ID,
             sda=Pin(config.PIN_I2C_SDA),
@@ -75,23 +65,22 @@ class TouchDriver:
             self._i2c.writeto_mem(self._addr, _FT_THRESHOLD, bytes([22]))
             self._i2c.writeto_mem(self._addr, _FT_CTRL,      bytes([0x00]))
         except OSError as e:
-            print(f"[touch] FT6236 init error: {e}")
+            print(f"[touch] FT6236 config error: {e}")
 
-        # Interrupt on GP28 — fires when touch data is ready
         self._int_pin = Pin(config.PIN_TOUCH_INT, Pin.IN, Pin.PULL_UP)
         self._int_pin.irq(trigger=Pin.IRQ_FALLING, handler=self._isr)
-        print(f"[touch] FT6236 ready at 0x{self._addr:02X}  INT=GP{config.PIN_TOUCH_INT}")
+
+        print(f"[touch] FT6236 ready  0x{self._addr:02X}  "
+              f"SDA=GP{config.PIN_I2C_SDA}  SCL=GP{config.PIN_I2C_SCL}  "
+              f"INT=GP{config.PIN_TOUCH_INT}")
+
+        return self._i2c   # return for sharing with MCP23008
 
     def _isr(self, _pin):
-        """Minimal ISR — set event only, no I²C in ISR."""
         self._int_evt.set()
 
-    # ── Background task ──────────────────────────────────────────
-
     async def run(self):
-        """Touch polling task. Post events to the shared queue."""
         while True:
-            # Wait for INT or 50ms timeout (catches long-press tick)
             try:
                 await asyncio.wait_for_ms(self._int_evt.wait(), 50)
                 self._int_evt.clear()
@@ -104,7 +93,7 @@ class TouchDriver:
             if points:
                 x, y = points[0]
                 x, y = self._transform(x, y)
-                self.pos      = (x, y)
+                self.pos       = (x, y)
                 self._last_pos = (x, y)
 
                 if not self._touch_down:
@@ -137,8 +126,6 @@ class TouchDriver:
                             self.gesture = direction
                             await self._post(TOUCH_SWIPE, direction)
 
-    # ── FT6236 read ──────────────────────────────────────────────
-
     def _read_points(self) -> list:
         try:
             n = self._i2c.readfrom_mem(
@@ -149,35 +136,25 @@ class TouchDriver:
             for i in range(min(n, 2)):
                 base = _FT_TOUCH1_XH + i * 6
                 d    = self._i2c.readfrom_mem(self._addr, base, 4)
-                x = ((d[0] & 0x0F) << 8) | d[1]
-                y = ((d[2] & 0x0F) << 8) | d[3]
+                x    = ((d[0] & 0x0F) << 8) | d[1]
+                y    = ((d[2] & 0x0F) << 8) | d[3]
                 points.append((x, y))
             return points
         except OSError:
             return []
 
-    # ── Coordinate transform ─────────────────────────────────────
-
     def _transform(self, x: int, y: int):
-        if config.TOUCH_SWAP_XY:
-            x, y = y, x
-        if config.TOUCH_FLIP_X:
-            x = config.TOUCH_W - 1 - x
-        if config.TOUCH_FLIP_Y:
-            y = config.TOUCH_H - 1 - y
-        x = max(0, min(config.TOUCH_W - 1, x))
-        y = max(0, min(config.TOUCH_H - 1, y))
-        return x, y
-
-    # ── Gesture ──────────────────────────────────────────────────
+        if config.TOUCH_SWAP_XY: x, y = y, x
+        if config.TOUCH_FLIP_X:  x = config.TOUCH_W - 1 - x
+        if config.TOUCH_FLIP_Y:  y = config.TOUCH_H - 1 - y
+        return (max(0, min(config.TOUCH_W - 1, x)),
+                max(0, min(config.TOUCH_H - 1, y)))
 
     @staticmethod
     def _classify_swipe(dx: int, dy: int) -> str:
         if abs(dx) >= abs(dy):
             return "swipe_right" if dx > 0 else "swipe_left"
         return "swipe_down" if dy > 0 else "swipe_up"
-
-    # ── Post to shared queue ──────────────────────────────────────
 
     async def _post(self, touch_id: int, event: str):
         if self._queue and not self._queue.full():

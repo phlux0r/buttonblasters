@@ -1,28 +1,29 @@
-# drivers/buttons.py — Button Blasters
-# Unified button + touch input driver.
+# drivers/buttons.py — Button Blasters v3.0
+# Button input via MCP23008 I2C GPIO expander.
 #
-# Physical buttons (confirmed GPIO):
-#   SCREEN-0  GP20  → id 0    SCREEN-1  GP22  → id 1
-#   SCREEN-2  GP0   → id 2    SCREEN-3  GP1   → id 3
-#   BACK/HOME GP16  → id 4
+# All 5 physical buttons are wired to MCP23008 GP0-GP4.
+# The MCP23008 is polled every BTN_POLL_MS over I2C (shared bus
+# with FT6236 touch at 0x38). MCP is at 0x20.
 #
-# NAV-NEXT removed — BTN-0 and BTN-3 serve as PREV/NEXT in menu
-# context via screen button presses (arrow icons shown on displays).
+# Button IDs:
+#   0 = SCREEN-0  (BTN-0 display — PREV ← in menu)
+#   1 = SCREEN-1  (BTN-1 display — game preview)
+#   2 = SCREEN-2  (BTN-2 display — game preview)
+#   3 = SCREEN-3  (BTN-3 display — NEXT → in menu)
+#   4 = BACK/HOME
 #
-# Touch events share the same queue (injected by attach_touch):
-#   id 10 = TOUCH_TAP        event = "tap"
-#   id 11 = TOUCH_LONG_PRESS event = "long_press"
-#   id 12 = TOUCH_SWIPE      event = "swipe_left" | "swipe_right" | ...
-#
-# GP28 = TOUCH_INT only — not polled as a button.
+# Touch events injected into same queue via attach_touch():
+#   10 = TOUCH_TAP        event = "tap"
+#   11 = TOUCH_LONG_PRESS event = "long_press"
+#   12 = TOUCH_SWIPE      event = direction string
 #
 # Full event format: (id: int, event: str)
-#   Physical: event = "press" | "release" | "hold"
-#   Touch:    event = gesture string (see above)
+#   Physical: "press" | "release" | "hold"
+#   Touch:    gesture string
 
 import asyncio
 import time
-from machine import Pin
+from machine import I2C, Pin
 import config
 from drivers.touch import TOUCH_TAP, TOUCH_LONG_PRESS, TOUCH_SWIPE
 
@@ -33,61 +34,109 @@ BTN_SCREEN_2 = 2
 BTN_SCREEN_3 = 3
 BTN_BACK     = 4
 
-# Menu role aliases — which screen buttons act as nav in menu
-BTN_PREV = BTN_SCREEN_0   # ← arrow shown on BTN-0 display
-BTN_NEXT = BTN_SCREEN_3   # → arrow shown on BTN-3 display
+# Menu role aliases
+BTN_PREV = BTN_SCREEN_0   # ← shown on BTN-0 display
+BTN_NEXT = BTN_SCREEN_3   # → shown on BTN-3 display
+
+# MCP23008 registers
+_IODIR    = 0x00
+_GPPU     = 0x06
+_GPIO_REG = 0x09
 
 
 class ButtonManager:
 
     def __init__(self):
-        # Screen buttons 0-3 + BACK button
-        _screen_gpios = list(config.PIN_BTN_SCREEN)  # (20, 22, 0, 1)
-        _nav_gpios    = [config.PIN_BTN_BACK]         # [16]
-        all_gpios     = _screen_gpios + _nav_gpios
-
-        self._pins       = [Pin(p, Pin.IN, Pin.PULL_UP) for p in all_gpios]
+        self._i2c        = None
+        self._mcp_addr   = config.MCP_I2C_ADDR
         self._queue      = asyncio.Queue(maxsize=32)
-        self._state      = [1] * len(self._pins)
-        self._pressed_at = [0] * len(self._pins)
-        self._touch      = None   # set via attach_touch()
+        self._state      = [True] * 5   # True = not pressed
+        self._pressed_at = [0]    * 5
+        self._touch      = None
+
+    def init_mcp(self, i2c: I2C):
+        """
+        Configure MCP23008 button pins as inputs with pull-ups.
+        Call once at boot before asyncio starts.
+        i2c: shared I2C bus already initialised by touch driver.
+        """
+        self._i2c = i2c
+        # Read current IODIR — preserve bits 5-7 (other uses)
+        current = self._mcp_read(_IODIR)
+        self._mcp_write(_IODIR, current | config.MCP_BTN_MASK)
+        self._mcp_write(_GPPU,  config.MCP_BTN_MASK)
+        print(f"[buttons] MCP23008 button pins configured  "
+              f"IODIR=0x{self._mcp_read(_IODIR):02X}  "
+              f"GPPU=0x{self._mcp_read(_GPPU):02X}")
 
     def attach_touch(self, touch_driver):
-        """
-        Wire the TouchDriver queue so touch events appear alongside
-        button events. Call during kernel init before asyncio starts.
-        """
+        """Wire TouchDriver queue so touch events appear alongside buttons."""
         touch_driver._queue = self._queue
         self._touch = touch_driver
+
+    # ── MCP23008 helpers ─────────────────────────────────────────
+
+    def _mcp_write(self, reg, val):
+        self._i2c.writeto_mem(self._mcp_addr, reg, bytes([val]))
+
+    def _mcp_read(self, reg):
+        return self._i2c.readfrom_mem(self._mcp_addr, reg, 1)[0]
+
+    def _read_buttons(self):
+        """Read MCP GPIO register. Returns raw byte."""
+        return self._mcp_read(_GPIO_REG)
+
+    @staticmethod
+    def _is_pressed(gpio_val, bit):
+        """True if button bit is LOW (pressed — active low)."""
+        return not (gpio_val >> bit & 1)
 
     # ── Background tasks ─────────────────────────────────────────
 
     async def run(self):
-        """Physical button polling task — runs for lifetime of app."""
+        """MCP23008 button polling task — runs for lifetime of app."""
+        if self._i2c is None:
+            print("[buttons] MCP23008 not initialised — button task idle")
+            return
+
         while True:
             now = time.ticks_ms()
-            for i, pin in enumerate(self._pins):
-                val = pin.value()
+            try:
+                gpio_val = self._read_buttons()
+            except OSError:
+                await asyncio.sleep_ms(config.BTN_POLL_MS)
+                continue
 
-                if val != self._state[i]:
+            for i in range(5):
+                pressed = self._is_pressed(gpio_val, i)
+
+                if pressed != (not self._state[i]):
+                    # State changed — debounce
                     await asyncio.sleep_ms(config.BTN_DEBOUNCE_MS)
-                    val = pin.value()
-                    if val == self._state[i]:
+                    try:
+                        gpio_val2 = self._read_buttons()
+                    except OSError:
+                        continue
+                    pressed = self._is_pressed(gpio_val2, i)
+
+                    if pressed == (not self._state[i]):
                         continue   # glitch
-                    self._state[i] = val
-                    if val == 0:   # pressed
+
+                    self._state[i] = not pressed
+
+                    if pressed:
                         self._pressed_at[i] = now
                         await self._post(i, "press")
-                    else:          # released
+                    else:
                         await self._post(i, "release")
 
-                elif val == 0:
+                elif pressed:
                     held = time.ticks_diff(now, self._pressed_at[i])
                     if held >= config.BTN_HOLD_MS:
                         self._pressed_at[i] = now + config.BTN_HOLD_MS
                         await self._post(i, "hold")
 
-            await asyncio.sleep_ms(10)
+            await asyncio.sleep_ms(config.BTN_POLL_MS)
 
     async def run_touch(self):
         """Touch polling task."""
@@ -101,7 +150,7 @@ class ButtonManager:
         return await self._queue.get()
 
     async def get_press(self) -> int:
-        """Block until a physical button press. Returns button id 0-4."""
+        """Block until a physical button press. Returns id 0-4."""
         while True:
             btn, evt = await self._queue.get()
             if evt == "press" and btn <= 4:
@@ -118,46 +167,44 @@ class ButtonManager:
     # ── Touch helpers ─────────────────────────────────────────────
 
     async def get_tap(self):
-        """Block until a screen tap. Returns (x, y)."""
+        """Block until screen tap. Returns (x, y)."""
         while True:
             btn, evt = await self._queue.get()
             if btn == TOUCH_TAP and evt == "tap":
                 return self._touch.pos or (0, 0)
 
     async def get_swipe(self) -> str:
-        """Block until a swipe. Returns direction string."""
+        """Block until swipe. Returns direction string."""
         while True:
             btn, evt = await self._queue.get()
             if btn == TOUCH_SWIPE:
                 return evt
 
     async def get_press_or_tap(self):
-        """Block until a physical press OR screen tap."""
+        """Block until physical press OR screen tap."""
         while True:
             btn, evt = await self._queue.get()
             if (evt == "press" and btn <= 4) or btn == TOUCH_TAP:
                 return btn, evt
 
-    # ── Menu nav helpers ──────────────────────────────────────────
-
     async def get_menu_event(self):
         """
         Block until a menu-relevant event.
-        Returns (action, data) where action is one of:
-          "prev"    — BTN-0 pressed (PREV ←)
-          "next"    — BTN-3 pressed (NEXT →)
-          "select"  — BTN-1 or BTN-2 pressed
-          "back"    — BACK/HOME pressed
-          "tap"     — screen tapped, data = (x, y)
-          "swipe"   — swipe gesture, data = direction string
+        Returns (action, data):
+          "prev"   — BTN-0 (PREV ←)
+          "next"   — BTN-3 (NEXT →)
+          "select" — BTN-1 or BTN-2, data = btn id
+          "back"   — BACK/HOME
+          "tap"    — screen tap, data = (x, y)
+          "swipe"  — swipe gesture, data = direction string
         """
         while True:
             btn, evt = await self._queue.get()
             if evt == "press" and btn <= 4:
-                if btn == BTN_PREV:   return "prev",   None
-                if btn == BTN_NEXT:   return "next",   None
-                if btn == BTN_BACK:   return "back",   None
-                return "select", btn   # BTN-1 or BTN-2
+                if btn == BTN_PREV: return "prev",   None
+                if btn == BTN_NEXT: return "next",   None
+                if btn == BTN_BACK: return "back",   None
+                return "select", btn
             if btn == TOUCH_TAP:
                 return "tap", self._touch.pos or (0, 0)
             if btn == TOUCH_SWIPE:
@@ -167,16 +214,13 @@ class ButtonManager:
 
     @property
     def touch_pos(self):
-        """Last known touch position as (x, y), or None."""
         return self._touch.pos if self._touch else None
 
     @property
     def touch_gesture(self):
-        """Last classified gesture string, or None."""
         return self._touch.gesture if self._touch else None
 
     def hit_test(self, x: int, y: int, rect: tuple) -> bool:
-        """True if (x, y) falls inside rect (rx, ry, rw, rh)."""
         rx, ry, rw, rh = rect
         return rx <= x < rx + rw and ry <= y < ry + rh
 
