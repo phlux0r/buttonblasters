@@ -20,6 +20,20 @@
 # Full event format: (id: int, event: str)
 #   Physical: "press" | "release" | "hold"
 #   Touch:    gesture string
+#
+# ── DEBOUNCE FIX ─────────────────────────────────────────────────
+# The old run() detected a press edge, slept BTN_DEBOUNCE_MS, then
+# re-read to "confirm" — if the button had been RELEASED in that window
+# (a quick child tap), it was treated as a glitch and DISCARDED, so the
+# press produced no event at all ("I press but nothing happens"). Also
+# that blocking sleep sat inside the per-button loop, stalling the scan
+# of the other buttons.
+#
+# New behaviour: fire "press" IMMEDIATELY on the first press edge (never
+# dropped), and debounce only the RELEASE — time-based (no blocking
+# sleep), so a quick tap always yields a press and bounce on release is
+# filtered. Press bounce is naturally absorbed because the momentary
+# release during bounce is itself release-debounced.
 
 import asyncio
 import time
@@ -86,8 +100,8 @@ class ButtonManager:
         self._i2c        = None
         self._mcp_addr   = config.MCP_I2C_ADDR
         self._queue      = None   # created in init_queue() after asyncio starts
-        self._state      = [True] * 5   # True = not pressed
-        self._pressed_at = [0]    * 5
+        self._state      = [True] * 5   # True = released (not pressed)
+        self._pressed_at = [0]    * 5   # ticks of the press edge (used by games)
         self._touch      = None
 
     def init_queue(self):
@@ -134,10 +148,20 @@ class ButtonManager:
     # ── Background tasks ─────────────────────────────────────────
 
     async def run(self):
-        """MCP23008 button polling task — runs for lifetime of app."""
+        """
+        MCP23008 button polling task — runs for lifetime of app.
+
+        Press fires immediately on the first edge (never dropped). Release
+        is debounced time-based (no blocking sleep), so quick taps always
+        register and release bounce is filtered.
+        """
         if self._i2c is None:
             print("[buttons] MCP23008 not initialised — button task idle")
             return
+
+        # Per-button timing state (task-lifetime locals; no blocking sleeps).
+        last_change = [0] * 5   # ticks of last accepted state change
+        last_hold   = [0] * 5   # ticks of last "hold" repeat
 
         while True:
             now = time.ticks_ms()
@@ -148,33 +172,34 @@ class ButtonManager:
                 continue
 
             for i in range(5):
-                pressed = self._is_pressed(gpio_val, i)
+                pressed  = self._is_pressed(gpio_val, i)
+                released = self._state[i]          # True = currently released
 
-                if pressed != (not self._state[i]):
-                    # State changed — debounce
-                    await asyncio.sleep_ms(config.BTN_DEBOUNCE_MS)
-                    try:
-                        gpio_val2 = self._read_buttons()
-                    except OSError:
-                        continue
-                    pressed = self._is_pressed(gpio_val2, i)
+                if pressed and released:
+                    # PRESS EDGE — fire IMMEDIATELY, never dropped.
+                    self._state[i]      = False
+                    self._pressed_at[i] = now
+                    last_change[i]      = now
+                    last_hold[i]        = now
+                    await self._post(i, "press")
 
-                    if pressed == (not self._state[i]):
-                        continue   # glitch
-
-                    self._state[i] = not pressed
-
-                    if pressed:
-                        self._pressed_at[i] = now
-                        await self._post(i, "press")
-                    else:
+                elif (not pressed) and (not released):
+                    # RELEASE EDGE — debounce (time-based): only accept once
+                    # the line has been stable past the debounce window.
+                    # A momentary bounce-high before that is ignored, so the
+                    # button stays "pressed" and no spurious release fires.
+                    if time.ticks_diff(now, last_change[i]) >= config.BTN_DEBOUNCE_MS:
+                        self._state[i] = True
+                        last_change[i] = now
                         await self._post(i, "release")
 
                 elif pressed:
-                    held = time.ticks_diff(now, self._pressed_at[i])
-                    if held >= config.BTN_HOLD_MS:
-                        self._pressed_at[i] = now + config.BTN_HOLD_MS
+                    # Steady pressed — emit repeating "hold" after BTN_HOLD_MS.
+                    if (time.ticks_diff(now, self._pressed_at[i]) >= config.BTN_HOLD_MS
+                            and time.ticks_diff(now, last_hold[i]) >= config.BTN_HOLD_MS):
+                        last_hold[i] = now
                         await self._post(i, "hold")
+                # else: steady released — nothing to do.
 
             await asyncio.sleep_ms(config.BTN_POLL_MS)
 

@@ -12,7 +12,14 @@ REGISTRY = []
 
 def _register(module_path, class_name):
     try:
-        mod = __import__(module_path, fromlist=[class_name])
+        # MicroPython note: __import__ is a native C function and does
+        # NOT accept keyword arguments (e.g. fromlist=...), which raises
+        # "function doesn't take keyword arguments". It also returns the
+        # TOP-level package, not the leaf module, so we walk the dotted
+        # path manually. This is version-proof across MicroPython builds.
+        mod = __import__(module_path)
+        for part in module_path.split(".")[1:]:
+            mod = getattr(mod, part)
         cls = getattr(mod, class_name)
         REGISTRY.append(cls)
         print(f"[registry] registered: {cls.GAME_ID} — {cls.TITLE}")
@@ -21,7 +28,7 @@ def _register(module_path, class_name):
 
 
 # ── Uncomment as games are implemented ───────────────────────────
-# _register("games.match.game",    "ShapeMatchGame")
+_register("games.match.game",    "ShapeMatchGame")
 # _register("games.memory.game",   "ButtonMemoryGame")
 # _register("games.bonk.game",     "StarBonkGame")
 # _register("games.count.game",    "CountItGame")

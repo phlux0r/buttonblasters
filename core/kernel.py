@@ -109,6 +109,13 @@ class AppKernel:
 
         print(f"[kernel] boot complete — {len(REGISTRY)} games registered")
 
+    # Two edits inside AppKernel.run(). These fix:
+    #   #2  LEDs staying on (rainbow) at game end
+    #   #3  BACK/HOME doing nothing on game end (2.5s blocking splash removed)
+    #
+    # The game (Shape Match) now owns its own end screen with a button-wait,
+    # so the kernel no longer needs the blocking _game_complete_sequence.
+
     async def run(self):
         asyncio.create_task(buttons.run())
         asyncio.create_task(buttons.run_touch())
@@ -125,7 +132,10 @@ class AppKernel:
             if leds.ready:
                 leds.start_effect(leds.chase(100, 200, 100))
             await game.load()
-            leds.off()
+            leds.stop_effect()          # FIX: was leds.off() — off() left the
+                                        # chase effect task running, which kept
+                                        # rewriting the strip. stop_effect()
+                                        # cancels the task AND clears the strip.
 
             print(f"[kernel] running {game.GAME_ID}")
             try:
@@ -139,19 +149,48 @@ class AppKernel:
             self._menu.update_result(game.GAME_ID,
                                      result.score, result.stars)
 
-            if result.completed:
-                await self._game_complete_sequence(result)
+            # FIX #2/#3: stop any lingering LED effect and turn the strip
+            # off at game end. The game already showed its own end screen
+            # and handled BACK/HOME, so we DON'T run the old blocking
+            # _game_complete_sequence (that 2.5s splash swallowed BACK).
+            leds.stop_effect()
+
+            # Optional non-blocking end voice (does not block BACK).
+            if result.completed and audio.ready:
+                if result.high_score:
+                    await audio.play_voice("new_high_score.wav")
+                else:
+                    await audio.play_voice("well_done.wav")
 
             await game.unload()
             print(f"[kernel] unloaded {game.GAME_ID}")
 
+    # NOTE: _game_complete_sequence() can stay defined in the file (unused
+    # now) or be deleted — your choice. Nothing calls it after this change.
+    # The menu's idle_rainbow still runs while in the menu (by design); if
+    # you want the strip fully dark in the menu too, tell me and I'll adjust
+    # menu.run().
+
+    # ── core/kernel.py — game_start transition tear fix ─────────────────
+    # Replace AppKernel._transition_to_game() with this version.
+    #
+    # BEFORE: played game_start.wav, THEN drew the "GET READY!" splash — the
+    # full-screen splash fill ran while the sound played, tearing the main
+    # screen (same overlap class as the wrong.wav bug in game.py).
+    #
+    # AFTER: draw the splash FIRST (silent), THEN play the sound — so no
+    # display SPI write overlaps audio playback. The LED flash is a
+    # non-blocking effect (no SPI contention), so it's fine to start first.
+
     async def _transition_to_game(self, game):
-        await audio.play_sfx("game_start.wav")
         if leds.ready:
             leds.start_effect(leds.flash(80, 80, 255, count=2))
-        await display.show_splash(game.TITLE, "GET READY!",
-                                  rgb(20, 60, 20))
-        await asyncio.sleep_ms(1200)
+        await display.show_splash(game.TITLE, "GET READY!", rgb(20, 60, 20))
+        # Await the sound FULLY so the game's own first draw (load /
+        # countdown / first round) can't overlap it and tear.
+        await audio.play_sfx("game_start.wav", wait=True)
+        await asyncio.sleep_ms(400)
+
 
     async def _game_complete_sequence(self, result: GameResult):
         if leds.ready:

@@ -1,16 +1,21 @@
 # drivers/audio.py — Button Blasters v3.0
 # MAX98357A I2S audio driver — confirmed GP0/GP1/GP16.
 #
-# NON-BLOCKING via IRQ-callback I2S (mode=I2S.TX, i2s.irq(cb)). write()
-# returns immediately; the callback fires on drain and sets an
-# asyncio.Event the playback loop awaits, so the event loop runs freely
-# during playback. (StreamWriter/drain() does NOT yield on this
-# RP2350/v1.28 build — measured — so IRQ-callback is required.)
+# NON-BLOCKING via IRQ-callback I2S (mode=I2S.TX, i2s.irq(cb)). In this
+# mode i2s.write() returns immediately and the driver fires the callback
+# when the buffer has drained; we await an asyncio.Event set by that
+# callback, so the event loop runs freely during playback.
 #
-# IMPORTANT: playback runs as fire-and-forget tasks. Their bodies are
-# wrapped in _guard() so an exception inside a task is caught rather than
-# silently swallowed by the scheduler — an earlier version lost ALL audio
-# because a task exception vanished with no traceback and no sound.
+# WHY NOT StreamWriter: on this RP2350 / MicroPython v1.28 build,
+# StreamWriter.drain() did NOT actually yield — audio still blocked the
+# loop and the display tore into stripes. IRQ-callback mode was measured
+# (test_i2s_yield.py) to keep the loop at ~92% speed during playback.
+#
+# Two channels:
+#   channel 0 = voice clips  (not interrupted by SFX)
+#   channel 1 = sound effects (interruptible)
+#
+# Synth fallback: if SD unavailable, named SFX become sine tones.
 #
 # Audio files on SD: 16-bit signed PCM WAV, mono, 22050Hz
 # Convert: ffmpeg -i input.mp3 -ar 22050 -ac 1 -acodec pcm_s16le out.wav
@@ -53,12 +58,16 @@ class AudioManager:
     """Two-channel non-blocking I2S audio (IRQ-callback) with synth fallback."""
 
     def __init__(self):
-        self._ready      = False
-        self._i2s        = None
-        self._voice_task = None
-        self._sfx_task   = None
-        self._volume     = 1.0
-        self._drain_evt  = None      # Event the IRQ sets (per-playback owner)
+        self._ready       = False
+        self._i2s         = None
+        self._voice_task  = None
+        self._sfx_task    = None
+        self._volume      = 1.0
+        # IRQ isolation: the callback sets whichever Event is "current".
+        # Each playback installs its own Event before writing a chunk, so
+        # a cancelled/superseded playback can't have a stale callback set
+        # the wrong Event.
+        self._drain_evt   = None
         self._init_hardware()
 
     def _init_hardware(self):
@@ -80,6 +89,8 @@ class AudioManager:
                 rate=config.AUDIO_SAMPLE_RATE,
                 ibuf=config.AUDIO_BUF_BYTES,
             )
+            # Single IRQ handler for the lifetime of the driver; it sets
+            # the Event that the currently-playing coroutine is awaiting.
             self._i2s.irq(self._on_drain)
             self._ready = True
             print(f"[audio] MAX98357A ready  "
@@ -90,7 +101,7 @@ class AudioManager:
             print(f"[audio] I2S init failed: {e}")
 
     def _on_drain(self, _arg):
-        # IRQ context — keep trivial: flag the current drain Event.
+        # IRQ context — keep it trivial: flag the current drain Event.
         evt = self._drain_evt
         if evt is not None:
             evt.set()
@@ -103,7 +114,7 @@ class AudioManager:
         self._cancel(self._voice_task)
         path = "/sd/audio/voice/" + filename
         self._voice_task = asyncio.create_task(
-            self._guard(self._play_file_or_synth(path, filename)))
+            self._play_file_or_synth(path, filename))
         if wait:
             try:
                 await self._voice_task
@@ -116,7 +127,7 @@ class AudioManager:
         self._cancel(self._sfx_task)
         path = "/sd/audio/sfx/" + filename
         self._sfx_task = asyncio.create_task(
-            self._guard(self._play_file_or_synth(path, filename)))
+            self._play_file_or_synth(path, filename))
         if wait:
             try:
                 await self._sfx_task
@@ -128,7 +139,7 @@ class AudioManager:
             return
         self._cancel(self._sfx_task)
         self._sfx_task = asyncio.create_task(
-            self._guard(self._play_synth(freq, duration_ms, volume)))
+            self._play_synth(freq, duration_ms, volume))
 
     def stop_sfx(self):
         self._cancel(self._sfx_task)
@@ -162,20 +173,12 @@ class AudioManager:
         if task and not task.done():
             task.cancel()
 
-    async def _guard(self, coro):
-        # Fire-and-forget tasks swallow exceptions silently (no traceback,
-        # no sound). Catch them here so one bad clip can't kill all audio.
-        try:
-            await coro
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            print(f"[audio] playback error: {repr(e)}")
-
     async def _stream(self, mv, n_bytes):
-        # Non-blocking write: install a per-playback Event, write, await
-        # the drain IRQ. The finally-block only releases the Event if it's
-        # still ours (a newer playback may have taken over).
+        """
+        Write mv[:n_bytes] to I2S in non-blocking chunks, awaiting the
+        drain IRQ between chunks so the event loop stays free.
+        Uses a per-call Event installed as self._drain_evt.
+        """
         evt = asyncio.Event()
         CHUNK = config.AUDIO_BUF_BYTES
         offset = 0
@@ -183,11 +186,13 @@ class AudioManager:
             while offset < n_bytes:
                 end = min(offset + CHUNK, n_bytes)
                 evt.clear()
-                self._drain_evt = evt
-                self._i2s.write(mv[offset:end])
-                await evt.wait()
+                self._drain_evt = evt          # this playback owns the IRQ now
+                self._i2s.write(mv[offset:end])  # returns immediately (IRQ mode)
+                await evt.wait()               # loop free until DMA drains
                 offset = end
         finally:
+            # Only relinquish the IRQ Event if it's still ours (a newer
+            # playback may have already taken it).
             if self._drain_evt is evt:
                 self._drain_evt = None
 
@@ -195,7 +200,7 @@ class AudioManager:
         try:
             await self._play_wav(path)
         except asyncio.CancelledError:
-            raise
+            return
         except OSError:
             basename = filename.split("/")[-1]
             if basename in _SYNTH_MAP:
@@ -204,7 +209,7 @@ class AudioManager:
 
     async def _play_wav(self, path: str):
         with open(path, 'rb') as f:
-            header = f.read(44)
+            header = f.read(44)                     # consume RIFF/WAVE header
             if header[:4] != b'RIFF' or header[8:12] != b'WAVE':
                 return
             buf = bytearray(config.AUDIO_BUF_BYTES)
@@ -220,9 +225,12 @@ class AudioManager:
                 await self._stream(mv, n)
 
     async def _play_synth(self, freq: int, duration_ms: int, volume: float = 0.4):
-        buf = _synth_tone(freq, duration_ms,
-                          volume * self._volume, config.AUDIO_SAMPLE_RATE)
-        await self._stream(memoryview(buf), len(buf))
+        try:
+            buf = _synth_tone(freq, duration_ms,
+                              volume * self._volume, config.AUDIO_SAMPLE_RATE)
+            await self._stream(memoryview(buf), len(buf))
+        except asyncio.CancelledError:
+            pass
 
 
 audio = AudioManager()

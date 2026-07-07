@@ -18,8 +18,11 @@ PIN_DC_MAIN  = 12
 PIN_RST_MAIN = 17
 # LED/backlight wired directly to 3.3V — no GPIO needed
 ILI9488_VCOM = 0x4D   # supplier confirmed critical value
-MAIN_W       = 320
-MAIN_H       = 480
+MAIN_W       = 480
+MAIN_H       = 320
+ILI9488_MADCTL = 0x28   # landscape. Rotation options (all BGR):
+#   0x48 = portrait (current)      0x28 = landscape
+#   0x88 = portrait flipped        0xE8 = landscape flipped (180° of 0x28)
 
 # ── ST7789 button displays (×4, 1.69" 240×300) ──────────────────
 PIN_CS_BTN   = (7, 8, 9, 10)
@@ -34,7 +37,7 @@ NUM_BTN_SCREENS = 4
 # ILI9488 SDO permanently drives MISO low — built-in slot unusable.
 # Separate SPI breakout needed. GP3 reserved for SD_CS.
 PIN_CS_SD  = 3
-SD_DEFERRED = True
+SD_DEFERRED = False
 
 # ── I²C — FT6236 touch + MCP23008 expander ──────────────────────
 # Both devices share the same I2C bus.
@@ -47,11 +50,11 @@ I2C_FREQ       = 400_000
 PIN_TOUCH_INT  = 28    # TOUCH_INT only — not a button
 PIN_TOUCH_RST  = None  # 10kΩ pull-up to 3.3V on board
 TOUCH_I2C_ADDR = 0x38
-TOUCH_W        = 320
-TOUCH_H        = 480
-TOUCH_SWAP_XY  = False
+TOUCH_W        = 480
+TOUCH_H        = 320
+TOUCH_SWAP_XY  = True
 TOUCH_FLIP_X   = False
-TOUCH_FLIP_Y   = False
+TOUCH_FLIP_Y   = True
 SWIPE_MIN_PX   = 40
 SWIPE_MAX_MS   = 400
 LONG_PRESS_MS  = 600

@@ -1,10 +1,11 @@
 # drivers/assets.py — Button Blasters v3.0
-# Asset manager — SD card deferred, graceful fallback throughout.
+# Asset manager — SD card now CONFIRMED WORKING via separate breakout.
 #
-# SD card status: DEFERRED
-#   ILI9488 SDO permanently drives MISO (GP4) low.
-#   Separate SPI breakout needed. GP3 reserved for SD_CS.
-#   All methods are safe to call with no SD — they return None/False.
+# SD card status: WORKING (separate SPI breakout on shared SPI0 bus)
+#   Built-in ILI9488 slot is unusable (SDO drives MISO/GP4 low).
+#   Separate breakout: SD_CS=GP3, 10kΩ pull-up on MISO (hardware),
+#   data transfers at 400kHz. Verified by test_sd_card.py.
+#   All methods remain safe to call with no SD — they return None/False.
 #
 # Directory layout (when SD available):
 #   /sd/images/shared/       — shared UI assets
@@ -19,11 +20,30 @@
 
 import asyncio
 import os
+from machine import Pin
 import config
 
 _SD_MOUNT = "/sd"
 _IMG_ROOT = _SD_MOUNT + "/images"
 _AUD_ROOT = _SD_MOUNT + "/audio"
+
+# Confirmed-working SD data-transfer rate. NOTE: this deliberately does
+# NOT use config.SPI_FREQ_SD_DATA (10MHz) — that value is aspirational
+# for a future soldered board. On the current breadboard build, 1.32MHz
+# (the sdcard.py default) and 10MHz both throw EIO on readblocks; 400kHz
+# is the rate test_sd_card.py actually passed at. Revisit once off
+# breadboard.
+_SD_DATA_BAUD = 400_000
+
+# Other CS pins on the shared SPI0 bus. Held HIGH before SD init so no
+# display controller drives the bus during the SD handshake (bus
+# contention otherwise causes init failure — same issue that made the
+# ILI9488's built-in slot unusable).
+_OTHER_CS_PINS = (
+    config.PIN_CS_MAIN,
+    config.PIN_CS_BTN[0], config.PIN_CS_BTN[1],
+    config.PIN_CS_BTN[2], config.PIN_CS_BTN[3],
+)
 
 
 class AssetManager:
@@ -40,19 +60,45 @@ class AssetManager:
             return False
         try:
             from sdcard import SDCard
-            from machine import SPI, Pin
+            from machine import SPI
             from drivers.spi_bus import spi_bus
+
+            # Safety: ensure no other device on the shared SPI0 bus is
+            # selected during SD init. Display drivers already idle CS
+            # high, but we assert it explicitly to match the confirmed
+            # test_sd_card.py sequence.
+            for pin_num in _OTHER_CS_PINS:
+                Pin(pin_num, Pin.OUT, value=1)
+
             cs     = Pin(config.PIN_CS_SD, Pin.OUT, value=1)
             sd_spi = SPI(config.SPI_ID,
                          baudrate=config.SPI_FREQ_SD_INIT,
                          sck=Pin(config.PIN_SCK),
                          mosi=Pin(config.PIN_MOSI),
                          miso=Pin(config.PIN_MISO))
-            sd = SDCard(sd_spi, cs)
+
+            # baudrate here is the POST-init data rate. Must be 400kHz on
+            # this breadboard (see _SD_DATA_BAUD note above) — the driver
+            # default of 1.32MHz fails with EIO on block reads.
+            sd = SDCard(sd_spi, cs, baudrate=_SD_DATA_BAUD)
             os.mount(sd, _SD_MOUNT)
+
+            # Restore the shared bus to display speed for the displays.
+            #
+            # SHARED-BUS HAZARD (known, not yet handled): SD and all five
+            # displays share SPI0 at different speeds (SD=400kHz,
+            # displays=10MHz). sdcard.py sets its speed once at init and
+            # does NOT re-assert it per read, so if a display transaction
+            # reconfigures the bus to 10MHz between two SD reads, the next
+            # SD read can fail with EIO. Harmless today (no game interleaves
+            # SD reads with display draws — Shape Match is solid-colour),
+            # but must be solved before any game streams SD assets mid-draw
+            # (e.g. My Big Day Out). Fix will be per-transaction speed
+            # re-assertion around SD reads.
             spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)
+
             self._sd_mounted = True
-            print("[assets] SD mounted at", _SD_MOUNT)
+            print("[assets] SD mounted at", _SD_MOUNT, "@ 400kHz data")
             return True
         except Exception as e:
             print(f"[assets] SD mount failed: {e}")

@@ -103,53 +103,65 @@ class Menu:
         await self._render_main_card()
         await self._render_btn_screens()
 
+# ── REPLACEMENT for Menu._render_main_card() in core/menu.py ─────────
+# Landscape 480×320 layout. Uses the wider canvas (bigger title) and
+# distributes elements across the shorter height. Only this one method
+# changes; _render_btn_screens() and everything else in menu.py stay
+# as-is (the button ST7789s are not affected by main-display rotation).
+
     async def _render_main_card(self):
         game_cls = self._registry[self._idx]
         bg       = _CARD_COLORS[self._idx % len(_CARD_COLORS)]
 
         await display.fill_main(bg)
 
-        # Icon
+        cx = config.MAIN_W // 2      # 240 in landscape
+
+        # Icon (optional, if present on SD) — top-centre
         if game_cls.ICON_FILE and assets.sd_available:
-            ix = config.MAIN_W // 2 - 32
-            await display.blit_main(game_cls.ICON_FILE, ix, 40)
+            await display.blit_main(game_cls.ICON_FILE, cx - 32, 24)
+            title_y = 96
+        else:
+            title_y = 60
 
-        # Title
-        title = game_cls.TITLE[:20]
-        tx = config.MAIN_W // 2 - len(title) * 8
-        await display.text_main(title, tx, 124, WHITE, bg, scale=2)
+        # Title — scale 3 for the wide canvas, auto-dropping to scale 2
+        # if a long title would overflow 480px.
+        title  = game_cls.TITLE[:22]
+        tscale = 3 if (cx - len(title) * 12 >= 4 and
+                       len(title) * 24 <= config.MAIN_W) else 2
+        thalf  = 8 * tscale // 2                    # half char width
+        tx     = max(4, cx - len(title) * thalf)
+        await display.text_main(title, tx, title_y, WHITE, bg, scale=tscale)
 
-        # Description
-        desc = game_cls.DESCRIPTION[:38]
-        dx = max(4, config.MAIN_W // 2 - len(desc) * 4)
-        await display.text_main(desc, dx, 148,
+        # Description — one line under the title
+        desc = game_cls.DESCRIPTION[:44]
+        dx   = max(4, cx - len(desc) * 4)          # scale 1 → char 8, half 4
+        await display.text_main(desc, dx, title_y + 40,
                                 rgb(200, 200, 200), bg, scale=1)
 
-        # Stars
-        game_id  = game_cls.GAME_ID
-        stars    = self._stars.get(game_id, 0)
+        # Stars — centred, scale 2
+        stars    = self._stars.get(game_cls.GAME_ID, 0)
         star_str = ("*" * stars) + ("-" * (3 - stars))
-        sx = config.MAIN_W // 2 - len(star_str) * 8
-        await display.text_main(star_str, sx, 168, YELLOW, bg, scale=2)
+        sx = cx - len(star_str) * 8                # scale 2 → char 16, half 8
+        await display.text_main(star_str, sx, title_y + 66, YELLOW, bg, scale=2)
 
-        # Tap hint
-        await display.text_main("TAP HERE TO PLAY",
-                                config.MAIN_W // 2 - 16 * 6,
-                                config.MAIN_H // 2 + 40,
-                                WHITE, bg, scale=1)
+        # Tap hint — lower third
+        hint = "TAP HERE TO PLAY"
+        hx   = cx - len(hint) * 8                   # scale 2
+        await display.text_main(hint, max(4, hx),
+                                config.MAIN_H - 70, WHITE, bg, scale=2)
 
-        # Carousel dots
+        # Carousel dots — bottom edge, centred
         dot_total_w = self._n * 12
-        dot_x0 = config.MAIN_W // 2 - dot_total_w // 2
-        dot_y  = config.MAIN_H - 20
+        dot_x0 = cx - dot_total_w // 2
+        dot_y  = config.MAIN_H - 22
         for i in range(self._n):
-            col   = WHITE if i == self._idx else rgb(80, 80, 80)
-            dot_x = dot_x0 + i * 12
-            await display.main.fill(col, dot_x, dot_y, 8, 8)
+            col = WHITE if i == self._idx else rgb(80, 80, 80)
+            await display.main.fill(col, dot_x0 + i * 12, dot_y, 8, 8)
 
-        # Battery (optional)
+        # Battery indicator (top-right, if wired)
         await self._render_battery(bg)
-
+        
     async def _render_btn_screens(self):
         """BTN-0 = PREV, BTN-1 = prev game preview,
            BTN-2 = next game preview, BTN-3 = NEXT."""
