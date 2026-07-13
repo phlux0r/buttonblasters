@@ -97,6 +97,11 @@ class AppKernel:
             await display.show_no_sd_warning()
             await asyncio.sleep_ms(1500)
 
+        # 7b. Shared icon-load pool — allocate ONCE now, heap is freshest
+        # (~187KB contiguous). Icon games borrow slices at load instead of
+        # allocating, so the fragmentation MemoryError can't recur. SD-independent.
+        assets.alloc_icon_pool(slots=6, w=120, h=120)
+
         # 8. Startup sound
         await audio.play_sfx("startup.wav")
 

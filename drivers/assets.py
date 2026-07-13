@@ -53,6 +53,8 @@ class AssetManager:
         self._cache       = {}
         self._cache_limit = 32_000
         self._sd_mounted  = False
+        self._icon_block  = None      # shared contiguous image-load block
+        self._icon_stride = 0
 
     def mount_sd(self) -> bool:
         if config.SD_DEFERRED:
@@ -123,6 +125,35 @@ class AssetManager:
         except OSError:
             pass
 
+    # ── Shared icon-load pool ────────────────────────────────────
+    # One contiguous block, allocated ONCE at boot (freshest heap). Icon games
+    # borrow memoryview slices instead of each allocating six buffers at
+    # game-load, where the heap is fragmented and six separate 28.8KB requests
+    # intermittently fail to place. Sized for the worst icon game: 6x120x120.
+    def alloc_icon_pool(self, slots=6, w=120, h=120):
+        if self._icon_block is not None:
+            return
+        import gc
+        gc.collect()
+        self._icon_stride = w * h * 2
+        self._icon_block  = bytearray(self._icon_stride * slots)
+        gc.collect()
+        print("[assets] icon pool: %d slots x %d B = %d B"
+              % (slots, self._icon_stride, len(self._icon_block)))
+
+    def borrow_icons(self, count, w, h):
+        # `count` memoryview slices of w*h*2 into the shared block. Only one
+        # game runs at a time, so sequential borrows are safe. Hard-fails.
+        need = w * h * 2
+        if self._icon_block is None:
+            self.alloc_icon_pool(count, w, h)     # lazy fallback (less fresh)
+        slots = len(self._icon_block) // need
+        if count > slots:
+            raise MemoryError("icon pool too small: need %d x %dB, holds %d"
+                              % (count, need, slots))
+        blk = memoryview(self._icon_block)
+        return [blk[i * need:(i + 1) * need] for i in range(count)]
+
     @staticmethod
     def image_size(filename: str):
         name = filename.rsplit(".", 1)[0]
@@ -187,6 +218,39 @@ class AssetManager:
             return buf
         except OSError:
             return None
+
+    def read_file(self, path, into=None):
+        # Speed-managed SD read. The shared SPI0 bus is left at display speed
+        # (10MHz) after any draw, but SD reads above ~1.32MHz EIO on this
+        # breadboard. Force 400kHz for the read, restore display speed in a
+        # finally so a fault can't strand the bus slow (the 44s-fill symptom).
+        #
+        # SYNCHRONOUS with NO awaits inside the 400kHz window, so a display
+        # draw can't sneak in mid-read and reset the clock. Call once per file;
+        # let the caller await between files.
+        #
+        #   into given  -> reads into it, returns bytes read (int)
+        #   into None   -> allocates a bytearray of file size, returns it
+        if not self._sd_mounted:
+            return None
+        from drivers.spi_bus import spi_bus
+        alloc = into is None
+        try:
+            spi_bus.spi.init(baudrate=_SD_DATA_BAUD)             # 400kHz for SD
+            if alloc:
+                into = bytearray(os.stat(path)[6])
+            mv   = memoryview(into)
+            need = len(mv)
+            off  = 0
+            with open(path, "rb") as f:
+                while off < need:
+                    n = f.readinto(mv[off:])
+                    if not n:
+                        break
+                    off += n
+        finally:
+            spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)   # restore 10MHz
+        return into if alloc else off
 
     def evict_cache(self, prefix: str = None):
         keys = list(self._cache.keys())
