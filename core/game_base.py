@@ -44,6 +44,13 @@ class BaseGame:
     MAX_AGE      = 7
     USES_BUTTONS = (0, 1, 2, 3)
     USES_NAV     = True
+    USES_COUNTDOWN = True    # reaction games keep it; override False otherwise
+    MENU_HEADER    = None    # RGB565 for a menu-card header band, or None
+    MENU_STARS_FG  = 0xe681  # GOLD — menu-card star colour (default)
+    MENU_STARS_BG  = 0xffff  # WHITE — flat colour of the card's stars zone
+    MAX_SCORE      = None    # override in subclasses with a natural score ceiling
+                             # (e.g. total matches) so stars scale to it instead
+                             # of the flat fallback below.
 
     def __init__(self, display, audio, leds, buttons, assets_mgr):
         self.display  = display
@@ -151,16 +158,28 @@ class BaseGame:
         await asyncio.sleep_ms(500)
 
     def _make_result(self) -> GameResult:
-        stars = 0
-        if self.score > 0:   stars = 1
-        if self.score >= 10: stars = 2
-        if self.score >= 20: stars = 3
         return GameResult(
             score=self.score,
-            stars=stars,
+            stars=self._stars_for(self.score),
             completed=not self._quit,
         )
 
+    def _stars_for(self, score: int) -> int:
+        if self.MAX_SCORE:
+            if score <= 0:
+                return 0
+            pct = score / self.MAX_SCORE
+            if pct >= 1.0:
+                return 3
+            if pct >= 0.65:
+                return 2
+            return 1
+        # Fallback for games with no fixed ceiling (endless/reaction style).
+        stars = 0
+        if score > 0:   stars = 1
+        if score >= 10: stars = 2
+        if score >= 20: stars = 3
+        return stars
 
 # Import haptic here to avoid circular at top of file
 from drivers.haptic import haptic

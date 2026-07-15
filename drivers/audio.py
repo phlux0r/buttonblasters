@@ -20,6 +20,7 @@ import struct
 import math
 import config
 
+_SD_DATA_BAUD = 400_000   # keep in sync with drivers/assets.py / game_cache.py
 
 _SYNTH_MAP = {
     "correct.wav":       (659, 150, 0.4),
@@ -68,26 +69,37 @@ class AudioManager:
             print("[audio] I2S pins not configured — audio disabled")
             return
         try:
-            from machine import I2S, Pin
-            self._i2s = I2S(
-                0,
-                sck=Pin(config.PIN_I2S_BCLK),
-                ws=Pin(config.PIN_I2S_LRC),
-                sd=Pin(config.PIN_I2S_DIN),
-                mode=I2S.TX,
-                bits=config.AUDIO_BITS,
-                format=I2S.MONO,
-                rate=config.AUDIO_SAMPLE_RATE,
-                ibuf=config.AUDIO_BUF_BYTES,
-            )
-            self._i2s.irq(self._on_drain)
+            # Confirm the peripheral can init, then release it immediately.
+            # MAX98357A auto-mutes with no valid clock present -- leaving I2S
+            # live for the whole runtime defeats that protection and lets any
+            # rail/DIN noise through at all times, not just during playback
+            # (confirmed: unplugging BCLK silenced file-transfer noise). From
+            # here on, I2S exists only for the duration of an actual _stream().
+            i2s = self._make_i2s()
+            i2s.deinit()
             self._ready = True
             print(f"[audio] MAX98357A ready  "
-                  f"BCLK=GP{config.PIN_I2S_BCLK}  "
-                  f"LRC=GP{config.PIN_I2S_LRC}  "
-                  f"DIN=GP{config.PIN_I2S_DIN}")
+                f"BCLK=GP{config.PIN_I2S_BCLK}  "
+                f"LRC=GP{config.PIN_I2S_LRC}  "
+                f"DIN=GP{config.PIN_I2S_DIN}")
         except Exception as e:
             print(f"[audio] I2S init failed: {e}")
+
+    def _make_i2s(self):
+        from machine import I2S, Pin
+        i2s = I2S(
+            0,
+            sck=Pin(config.PIN_I2S_BCLK),
+            ws=Pin(config.PIN_I2S_LRC),
+            sd=Pin(config.PIN_I2S_DIN),
+            mode=I2S.TX,
+            bits=config.AUDIO_BITS,
+            format=I2S.MONO,
+            rate=config.AUDIO_SAMPLE_RATE,
+            ibuf=config.AUDIO_BUF_BYTES,
+        )
+        i2s.irq(self._on_drain)
+        return i2s
 
     def _on_drain(self, _arg):
         # IRQ context — keep trivial: flag the current drain Event.
@@ -173,9 +185,6 @@ class AudioManager:
             print(f"[audio] playback error: {repr(e)}")
 
     async def _stream(self, mv, n_bytes):
-        # Non-blocking write: install a per-playback Event, write, await
-        # the drain IRQ. The finally-block only releases the Event if it's
-        # still ours (a newer playback may have taken over).
         evt = asyncio.Event()
         CHUNK = config.AUDIO_BUF_BYTES
         offset = 0
@@ -203,12 +212,15 @@ class AudioManager:
                 await self._play_synth(freq, dur, vol * self._volume)
 
     async def _play_wav(self, path: str):
-        with open(path, 'rb') as f:
-            header = f.read(44)
-            if header[:4] != b'RIFF' or header[8:12] != b'WAVE':
-                return
-            buf = bytearray(config.AUDIO_BUF_BYTES)
-            mv  = memoryview(buf)
+        f = open(path, 'rb')
+        header = f.read(44)
+        if header[:4] != b'RIFF' or header[8:12] != b'WAVE':
+            f.close()
+            return
+        buf = bytearray(config.AUDIO_BUF_BYTES)
+        mv  = memoryview(buf)
+        self._i2s = self._make_i2s()   # one session for the whole clip
+        try:
             while True:
                 n = f.readinto(buf)
                 if n == 0:
@@ -218,11 +230,19 @@ class AudioManager:
                         s = struct.unpack_from('<h', buf, i)[0]
                         struct.pack_into('<h', buf, i, int(s * self._volume))
                 await self._stream(mv, n)
+        finally:
+            f.close()
+            self._i2s.deinit()
+            self._i2s = None
 
     async def _play_synth(self, freq: int, duration_ms: int, volume: float = 0.4):
         buf = _synth_tone(freq, duration_ms,
-                          volume * self._volume, config.AUDIO_SAMPLE_RATE)
-        await self._stream(memoryview(buf), len(buf))
-
+                        volume * self._volume, config.AUDIO_SAMPLE_RATE)
+        self._i2s = self._make_i2s()
+        try:
+            await self._stream(memoryview(buf), len(buf))
+        finally:
+            self._i2s.deinit()
+            self._i2s = None
 
 audio = AudioManager()

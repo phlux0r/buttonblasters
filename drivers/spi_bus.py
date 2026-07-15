@@ -38,6 +38,25 @@ class SpiBus:
     def read(self, n, write=0x00):
         return self.spi.read(n, write)
 
+    def raw(self, freq: int):
+        """For devices that manage their own CS internally (e.g. SD, via
+        sdcard.py's per-block CS toggling) — just serialises bus access
+        and sets frequency through the cache-aware path. No CS control."""
+        return _RawContext(self, freq)
+
+
+class _RawContext:
+    def __init__(self, bus: SpiBus, freq: int):
+        self._bus  = bus
+        self._freq = freq
+
+    async def __aenter__(self):
+        await self._bus._lock.acquire()
+        self._bus._set_freq(self._freq)
+        return self._bus
+
+    async def __aexit__(self, *_):
+        self._bus._lock.release()
 
 class _DeviceContext:
     def __init__(self, bus: SpiBus, cs: Pin, freq: int):

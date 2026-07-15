@@ -1,32 +1,43 @@
 # games/match/game.py — Button Blasters
 # Match It! — child presses the button whose screen matches the item shown
-# on the main display. Items are IMAGE ICONS loaded from the SD card, in
-# three category rounds.
+# on the main display. Items are 96x96 icon sprites decompressed from FLASH
+# (littlefs) through flash_assets, in three category rounds.
 #
 # Structure (3 rounds, 6 matches each = 18 matches total, max score 18/18):
 #   Round 1 : shapes   (circle, square, triangle, star, diamond, hexagon)
 #   Round 2 : fruit    (apple, banana, orange, grapes, strawberry, watermelon)
-#   Round 3 : animals  (cat, dog, cow, duck, frog, lion)
+#   Round 3 : animals  (cat, dog, cow, duck, bird, sheep)
 # Each round shows all six of its items as the target once (shuffled order),
 # with three random distractors from the same category on the other buttons.
 #
-# ASSETS: /sd/games/match/img/<cat>_<item>_120x120.raw
-#   raw RGB565 little-endian, 120x120 = 28,800 bytes each (18 files).
-#   Transparent PNGs are BAKED onto ICON_BG at ffmpeg time (RGB565 has no
-#   alpha), so each tile is already a finished 120x120 image. Fill each
-#   surface with the SAME ICON_BG so the baked edges blend with no halo.
+# ASSETS: /assets/match/sprb_<cat>-<item>_96x96x1.sz  (18 files)
+#   Baked by bake_assets.py: single-frame BE RGB565 sprite (kind 3), opaque
+#   on WHITE (no magenta key). The loader enforces BE-ness, so a mis-baked LE
+#   asset fails loudly at load() instead of showing colour corruption.
 #
-# LOADING: per-category RAM preload. Six icon buffers (~169KB) are allocated
-#   ONCE in load() and REUSED for every category — never per-round, never
-#   per-match (memory-conscious, matches the pre-allocate principle). At each
-#   round start the six files are read into those buffers behind a "Get
-#   ready!" splash; the ~5s SD read at 400kHz is hidden by the transition.
-#   Reads use plain open()/readinto() exactly like drivers/audio.py — the
-#   display driver's always-reinit restores 10MHz on the next blit, so the
-#   game does NOT manage bus frequency itself.
+# BOARD: /assets/match/bgm_match_480x320.bz — full-screen main-screen
+#   background, BE RGB565 (kind 1, bgm_ prefix). Painted ONCE per round via
+#   main.blit_rgb565 (the same BE path as the tiles/text — NOT the strip
+#   renderer, whose converter is LE and needs the 150KB pool). Streamed
+#   strip-by-strip from flash through an arena-borrowed ~30KB buffer. The
+#   board supplies the white match-card and all decoration; each match then
+#   repaints ONLY the pink header strip (variable-width prompt + score) and
+#   blits the new target/tiles over the old, so the decoration persists.
 #
-# MISSING ASSET: falls back to a coloured placeholder tile (so the mechanic
-#   is testable before all 18 PNGs exist) and prints the missing path.
+# LOADING: flash load-and-discard, one match's working set at a time. The
+#   panels retain their pixels after a blit, so nothing needs to stay in RAM
+#   once it's on screen. Per match we reset the shared sprite arena, load the
+#   four distinct icons for that match (target + 3 distractors, 4x18.4KB =
+#   ~74KB, fits the 96KB arena), blit them, and the next match resets/reloads.
+#   No boot-time icon pool, no per-category preload, no SD access — SD stays
+#   reserved for My Big Day Out. The arena itself is seated ONCE at boot by
+#   flash_assets.init() (core/kernel.py step 7b), on the freshest heap, so no
+#   post-boot large allocation can fragment — the old MemoryError-under-churn
+#   is gone by construction.
+#
+# MISSING ASSET: falls back to a coloured placeholder tile drawn straight to
+#   the display (so the mechanic stays testable before all 18 PNGs exist) and
+#   prints the missing path.
 #
 # Button IDs (core/game_base.py): 0-3 = screen buttons, 4 = BACK/HOME.
 
@@ -34,11 +45,11 @@ import gc
 import time
 import asyncio
 import random
-import framebuf
 import config
 from core.game_base import BaseGame, GameResult
 from core.display_manager import (rgb, WHITE, YELLOW, RED, GREEN, BLUE,
                                    CYAN, MAGENTA, ORANGE, DARK)
+from drivers import flash_assets
 
 # ── Content ──────────────────────────────────────────────────────
 ITEMS = {
@@ -46,28 +57,41 @@ ITEMS = {
     "fruit":  ("apple", "banana", "orange", "grapes", "strawberry", "watermelon"),
     "animal": ("cat", "dog", "cow", "duck", "bird", "sheep"),
 }
-CATEGORIES        = ("shape", "fruit", "animal")   # round order
-CATEGORY_LABEL    = {"shape": "Shapes", "fruit": "Fruit", "animal": "Animals"}
+CATEGORIES         = ("shape", "fruit", "animal")   # round order
+CATEGORY_LABEL     = {"shape": "Shapes", "fruit": "Fruit", "animal": "Animals"}
 ITEMS_PER_CATEGORY = 6
 MATCHES_PER_ROUND  = 6
 MAX_SCORE          = len(CATEGORIES) * MATCHES_PER_ROUND   # 18
 
-IMG_DIR = "/sd/games/match/img/"
+ASSET_DIR = "/assets/static/match/"
 
 # ── Appearance ───────────────────────────────────────────────────
-# ICON_BG is the colour baked behind every icon at conversion time AND the
-# colour each surface is filled with, so the anti-aliased edges blend cleanly.
-# White reads as clean "cards" for ages 4-7; set to DARK to match the old look.
+# Icons are baked opaque on WHITE, so we fill each surface WHITE first and the
+# tile edges blend into a clean card with no halo. Set to DARK for the old look.
 ICON_BG = WHITE
 
 # ── Geometry ─────────────────────────────────────────────────────
-ICON = 120
-BTN_ICON_X  = (config.BTN_W  - ICON) // 2      # 240 -> 60
-BTN_ICON_Y  = (config.BTN_H  - ICON) // 2      # 300 -> 90
-MAIN_ICON_X = (config.MAIN_W - ICON) // 2      # 480 -> 180
-MAIN_ICON_Y = (config.MAIN_H - ICON) // 2 + 20 # 320 -> 120
+ICON = 96
+BTN_ICON_X  = (config.BTN_W  - ICON) // 2       # 240 -> 72
+BTN_ICON_Y  = (config.BTN_H  - ICON) // 2       # 300 -> 102
+MAIN_ICON_X = (config.MAIN_W - ICON) // 2       # 480 -> 192
+MAIN_ICON_Y = (config.MAIN_H - ICON) // 2 + 20  # 320 -> 132
 
 _FALLBACK = (RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA)
+
+# ── Background board ─────────────────────────────────────────────
+BOARD_PATH   = "/assets/match/bgm_match_480x320.bz"  # BE, kind 1 (bgm_)
+REPLAY_TILE_PATH = "/assets/menu/btn_menu-match_240x300.bz"  # reused, 0 extra KB
+BACK_TILE_PATH   = "/assets/menu/btn_back_240x300.bz"          # new, shared across games
+HEADER_COLOR = 0xEA16      # #EB42B5 hot pink, quantized to RGB565
+HEADER_H     = 44          # pink flat zone the prompt+score live in: (0,0,480,44)
+PROMPT_Y     = 24          # prompt y inside the header (score sits at y=4)
+# The white match-card painted into the board art must contain the centered
+# target tile:  card (120, 104, 240, 152)  ⊃  tile (192, 132, 96, 96).
+INTRO_PATH    = "/assets/match/bgm_intro-%s_480x320.bz"  # % cat; BE, kind 1
+INTRO_HOLD_MS = 400       # extra beat the category card stays up (tunable)
+RESULT_PATH    = "/assets/match/bgm_result_480x320.bz"  # BE, kind 1
+RESULT_SCORE_Y = 108      # score overlay y (scale-4, in the card's flat zone)
 
 
 def _shuffle(lst):
@@ -75,6 +99,14 @@ def _shuffle(lst):
     for i in range(len(lst) - 1, 0, -1):
         j = random.randint(0, i)
         lst[i], lst[j] = lst[j], lst[i]
+
+
+def _fb_idx(name):
+    # Stable placeholder colour per item name.
+    s = 0
+    for c in name:
+        s += ord(c)
+    return s % len(_FALLBACK)
 
 
 class ShapeMatchGame(BaseGame):
@@ -87,124 +119,94 @@ class ShapeMatchGame(BaseGame):
     MAX_AGE      = 7
     USES_BUTTONS = (0, 1, 2, 3)
     USES_NAV     = False
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._icon_bufs = None      # six 120x120 RGB565 views borrowed from
-        self._icon_map  = None      # the shared assets pool; name -> view
+    USES_COUNTDOWN = False       # no clock in Match It! — skip the 3-2-1
+    MENU_HEADER   = 0xEA16        # hot pink menu-card header (matches the board)
+    MENU_STARS_FG = 0xe681     # GOLD — menu-card star colour (default)
+    MENU_STARS_BG = 0xff9b     # CREAM — flat colour of the card's stars zone
+    MAX_SCORE     = MAX_SCORE   # module constant (18) — reuses the value
+                                # already used for the "X of 18" end-screen text
 
     # ── Lifecycle ────────────────────────────────────────────────
 
     async def load(self):
-        # Borrow six 120x120 icon views from the shared image-load pool that
-        # `assets` allocated ONCE at boot (freshest heap). No game-load
-        # allocation → the fragmentation MemoryError can't happen here. The
-        # views point into the shared block; we never free it (assets owns it).
+        # No allocation here — icons are decompressed from flash into the
+        # shared arena at draw time (seated at boot by flash_assets.init()).
+        # No title screen: the menu already showed the title and the category
+        # card announces each round, so we just clear the button screens and
+        # leave the main display for the first category card in run().
         gc.collect()
-        self._icon_bufs = self.assets.borrow_icons(ITEMS_PER_CATEGORY, ICON, ICON)
-        self._icon_map = {}
-        gc.collect()
-
-        await self.display.clear_all()
-        await self.display.fill_main(DARK)
-        await self.display.text_main(
-            self.TITLE, config.MAIN_W // 2 - len(self.TITLE) * 8,
-            20, WHITE, DARK, scale=2)
         await self.display.fill_all_btns(DARK)
 
     async def run(self) -> GameResult:
         self._running = True
         self.score = 0
 
-        await self.countdown(3)
+        if self.USES_COUNTDOWN:
+            await self.countdown(3)   # only ever fires once — never on replay
 
-        for cat in CATEGORIES:
-            if not self._running:
-                break
-            if await self.check_back():
-                break
-
-            await self._show_category_intro(cat)
-            await self._preload_category(cat)
-
-            order = list(ITEMS[cat])
-            _shuffle(order)                         # each item is target once
-
-            for m in range(MATCHES_PER_ROUND):
+        while True:
+            for cat in CATEGORIES:
+                if not self._running:
+                    break
                 if await self.check_back():
-                    self._running = False
                     break
 
-                target = order[m]
-                screen_items, correct_idx = self._layout_match(cat, target)
-                await self._draw_match(target, screen_items)
+                await self._show_category_intro(cat)
+                if not await self.display.paint_main_bg(BOARD_PATH):
+                    await self.display.fill_main(DARK)
 
-                # Timestamp gate: only accept a press whose edge occurs AFTER
-                # the match finished drawing, so an eager press made mid-draw
-                # isn't consumed/dropped (hard-won; see _wait_answer).
-                gate_ms = time.ticks_ms()
-                pressed = await self._wait_answer(gate_ms)
-                if pressed == "quit":
-                    self._running = False
-                    break
+                order = list(ITEMS[cat])
+                _shuffle(order)
 
-                if pressed == correct_idx:
-                    self.score += 1
-                    await self.show_correct()
-                else:
-                    await self._reveal_correct(correct_idx)
+                for m in range(MATCHES_PER_ROUND):
+                    if await self.check_back():
+                        self._running = False
+                        break
 
-        await self._end_screen()
+                    target = order[m]
+                    screen_items, correct_idx = self._layout_match(cat, target)
+                    await self._draw_match(cat, target, screen_items)
+
+                    gate_ms = time.ticks_ms()
+                    pressed = await self._wait_answer(gate_ms)
+                    if pressed == "quit":
+                        self._running = False
+                        break
+
+                    if pressed == correct_idx:
+                        self.score += 1
+                        await self.show_correct()
+                    else:
+                        await self._reveal_correct(correct_idx)
+
+            if not self._running:
+                break   # mid-game BACK/HOME — exit immediately, no end screen
+
+            choice = await self._end_screen()
+            if choice == "back":
+                break
+            self.score = 0   # "again" — straight back into round 1, no countdown
+
         return self._make_result()
 
     async def unload(self):
-        # Drop our views; the shared pool block stays alive on `assets` for
-        # the next game to borrow.
-        self._icon_bufs = None
-        self._icon_map  = None
+        # Nothing game-owned to free; the arena persists on flash_assets for
+        # the next game. Just tidy up and defer to the base cleanup.
+        flash_assets.arena.reset()
         gc.collect()
         await super().unload()
 
-    # ── Category preload ─────────────────────────────────────────
+    # ── Category intro ───────────────────────────────────────────
 
     async def _show_category_intro(self, cat):
-        await self.display.show_splash(
-            "Get ready!", CATEGORY_LABEL[cat], bg_color=rgb(20, 30, 60))
-        # Play the cue with wait=True so it finishes BEFORE the blocking SD
-        # preload (which would otherwise starve the audio task's I2S feed).
+        # Paint the baked category card; fall back to the text splash if the
+        # asset is missing so the round is still announced.
+        if not await self.display.paint_main_bg(INTRO_PATH % cat):
+            await self.display.show_splash(
+                "Get ready!", CATEGORY_LABEL[cat], bg_color=rgb(20, 30, 60))
         if self.audio and self.audio.ready:
             await self.audio.play_sfx("game_start.wav", wait=True)
-
-    async def _preload_category(self, cat):
-        # Read all six icons into the reusable buffers. Plain open()/readinto()
-        # like audio; the display driver re-inits 10MHz on the next blit, so no
-        # manual bus-freq handling here.
-        self._icon_map = {}
-        for i, name in enumerate(ITEMS[cat]):
-            buf  = self._icon_bufs[i]
-            path = "%s%s_%s_%dx%d.raw" % (IMG_DIR, cat, name, ICON, ICON)
-            if not self._load_icon(path, buf):
-                self._fill_fallback(buf, i, name)
-                print("[match] missing asset, using fallback:", path)
-            self._icon_map[name] = buf
-            await asyncio.sleep_ms(0)               # let the loop breathe
-
-    def _load_icon(self, path, buf):
-        # Route through assets.read_file so the bus drops to 400kHz for the
-        # read and restores display speed after (the shared-bus SD-read fix).
-        # Do NOT open() directly here — a raw read runs at whatever speed the
-        # last display draw left the bus (10MHz), which EIOs on this breadboard.
-        try:
-            return self.assets.read_file(path, into=buf) == len(buf)
-        except OSError:
-            return False
-
-    def _fill_fallback(self, buf, idx, name):
-        # Coloured placeholder so matches stay distinguishable without art.
-        fb = framebuf.FrameBuffer(buf, ICON, ICON, framebuf.RGB565)
-        fb.fill(ICON_BG)
-        fb.fill_rect(12, 12, ICON - 24, ICON - 24, _FALLBACK[idx % len(_FALLBACK)])
-        fb.text(name[:9].upper(), 10, ICON // 2 - 4, WHITE)
+        await asyncio.sleep_ms(INTRO_HOLD_MS)     # let the card breathe
 
     # ── Match setup ──────────────────────────────────────────────
 
@@ -223,29 +225,75 @@ class ShapeMatchGame(BaseGame):
                 screen_items[i] = next(d_iter)
         return screen_items, correct_idx
 
+    # ── Asset loading (flash, per-match) ─────────────────────────
+
+    def _asset_path(self, cat, name):
+        return "%ssprb_%s-%s_%dx%dx1.sz" % (ASSET_DIR, cat, name, ICON, ICON)
+
+    def _load_frame(self, cat, name, frames):
+        # Decompress one icon from flash into the shared arena and cache its
+        # memoryview for the duration of this match (so the target isn't loaded
+        # twice — it appears big on main AND on its button). Returns the BE
+        # RGB565 memoryview, or None if the asset is missing/bad.
+        f = frames.get(name)
+        if f is not None or (name in frames):
+            return f
+        try:
+            sheet = flash_assets.SpriteSheet(self._asset_path(cat, name))
+            f = sheet.frame(0)
+        except Exception as e:
+            print("[match] asset load failed:", self._asset_path(cat, name), e)
+            f = None
+        frames[name] = f
+        return f
+
     # ── Rendering ────────────────────────────────────────────────
 
-    async def _draw_match(self, target, screen_items):
-        await self.display.fill_main(DARK)
+    async def _draw_match(self, cat, target, screen_items):
+        # Fresh arena for this match's working set (<=4 icons, ~74KB).
+        flash_assets.arena.reset()
+        frames = {}
+
+        # Clear ONLY the pink header strip — the prompt is variable-width, so a
+        # shorter new prompt wouldn't fully erase a longer old one without this.
+        # The white card + decoration come from the board and are left intact;
+        # the new target tile simply overwrites the old (same 96x96 rect).
+        await self.display.main.fill(HEADER_COLOR, 0, 0, config.MAIN_W, HEADER_H)
         prompt = "Find the " + target + "!"
         await self.display.text_main(
-            prompt, config.MAIN_W // 2 - len(prompt) * 8, 24,
-            WHITE, DARK, scale=2)
+            prompt, config.MAIN_W // 2 - len(prompt) * 8, PROMPT_Y,
+            WHITE, HEADER_COLOR, scale=2)
 
-        await self.display.main.blit_rgb565(
-            memoryview(self._icon_map[target]),
-            MAIN_ICON_X, MAIN_ICON_Y, ICON, ICON)
-        await self.display.draw_score(self.score)
+        # Big target on the main screen (over the board's white card).
+        tf = self._load_frame(cat, target, frames)
+        if tf is not None:
+            await self.display.main.blit_rgb565(
+                memoryview(tf), MAIN_ICON_X, MAIN_ICON_Y, ICON, ICON)
+        else:
+            await self.display.main.fill(
+                _FALLBACK[_fb_idx(target)],
+                MAIN_ICON_X, MAIN_ICON_Y, ICON, ICON)
+        # White digits blend better than yellow on the pink header; bg matches
+        # the header so the score box is invisible. (color=YELLOW to revert.)
+        await self.display.draw_score(self.score, color=WHITE, bg=HEADER_COLOR)
 
+        # Four option tiles on the button screens.
         for i, name in enumerate(screen_items):
-            await self._draw_btn_icon(i, name)
+            await self._draw_btn_icon(cat, i, name, frames)
 
-    async def _draw_btn_icon(self, idx, name):
-        # Fill with ICON_BG (matches the baked-in tile background) then blit.
+    async def _draw_btn_icon(self, cat, idx, name, frames):
         await self.display.fill_btn(idx, ICON_BG)
-        await self.display.blit_btn_buf(
-            idx, self._icon_map[name], ICON, ICON,
-            x=BTN_ICON_X, y=BTN_ICON_Y)
+        f = self._load_frame(cat, name, frames)
+        if f is not None:
+            await self.display.blit_btn_buf(
+                idx, f, ICON, ICON, x=BTN_ICON_X, y=BTN_ICON_Y)
+        else:
+            col = _FALLBACK[_fb_idx(name)]
+            await self.display.fill_btn(idx, col)
+            lbl = name[:9].upper()
+            await self.display.text_btn(
+                idx, lbl, max(0, config.BTN_W // 2 - len(lbl) * 4),
+                config.BTN_H // 2 - 4, WHITE, col, scale=1)
 
     # ── Input + feedback ─────────────────────────────────────────
 
@@ -289,24 +337,62 @@ class ShapeMatchGame(BaseGame):
         await self.audio.play_sfx("wrong.wav", wait=True)
         await asyncio.sleep_ms(300)   # a beat so the child sees the answer
 
+    # ── End screen ────────────────────────────────────────────────
+
     async def _end_screen(self):
+        """Result card + BTN-0 'Back' / BTN-1-3 'Play again' (all three show
+        the same reused tile). No timeout — waits indefinitely for a choice."""
         try:
             self.leds.stop_effect()
         except Exception:
             pass
 
-        await self.display.show_splash(
-            "You got", "%d of %d" % (self.score, MAX_SCORE),
-            bg_color=rgb(10, 60, 20))
+        score_str = "%d of %d" % (self.score, MAX_SCORE)
+        if await self.display.paint_main_bg(RESULT_PATH):
+            ssx = config.MAIN_W // 2 - len(score_str) * 8
+            await self.display.text_main(
+                score_str, ssx, RESULT_SCORE_Y, 0xEA16, WHITE, scale=2)
+        else:
+            await self.display.show_splash(
+                "You got", score_str, bg_color=rgb(10, 60, 20))
 
-        # Any button, or auto-return after 4 seconds.
+        if not await self.display.paint_btn_bg(0, BACK_TILE_PATH):
+            await self._show_back_fallback(0)
+        for idx in (1, 2, 3):
+            if not await self.display.paint_btn_bg(idx, REPLAY_TILE_PATH):
+                await self._show_replay_fallback(idx)
+
+        return await self._wait_end_choice()
+
+    async def _wait_end_choice(self):
         self.buttons.clear()
-        deadline = time.ticks_add(time.ticks_ms(), 4000)
-        while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+        while True:
             try:
                 btn, evt = self.buttons._queue.get_nowait()
-                if evt == "press":
-                    break
             except Exception:
-                pass
-            await asyncio.sleep_ms(20)
+                await asyncio.sleep_ms(20)
+                continue
+            if evt != "press":
+                continue
+            if btn == 0 or btn == 4:      # BTN-0 tile, or hardware BACK/HOME
+                return "back"
+            if btn in (1, 2, 3):
+                return "again"
+
+    async def _show_back_fallback(self, idx):
+        # Procedural stand-in until btn_back_240x300.bz is baked & uploaded.
+        bg = rgb(60, 15, 15)
+        await self.display.fill_btn(idx, bg)
+        await self.display.draw_btn_border(idx, rgb(200, 60, 60))
+        label = "BACK"
+        lx = config.BTN_W // 2 - len(label) * 4
+        await self.display.text_btn(idx, label, max(0, lx),
+                                    config.BTN_H // 2 - 4, WHITE, bg, scale=1)
+
+    async def _show_replay_fallback(self, idx):
+        bg = rgb(15, 60, 20)
+        await self.display.fill_btn(idx, bg)
+        await self.display.draw_btn_border(idx, rgb(60, 200, 90))
+        label = "AGAIN"
+        lx = config.BTN_W // 2 - len(label) * 4
+        await self.display.text_btn(idx, label, max(0, lx), config.BTN_H // 2 - 4, WHITE, bg, scale=1)

@@ -19,6 +19,7 @@ import time
 from core.display_manager import display, rgb, BLACK
 from core.menu import Menu
 from core.game_base import GameResult
+from core import game_cache
 from games.registry import REGISTRY
 from drivers.buttons import buttons
 from drivers.touch import touch
@@ -26,10 +27,12 @@ from drivers.audio import audio
 from drivers.leds import leds
 from drivers.haptic import haptic
 from drivers.assets import assets
+from drivers import flash_assets
 import config
 
 _SCORES_PATH = "/sd/scores.json"
-
+_BOOT_BG = "/assets/sys/bgm_boot_480x320.bz"
+_NOSD_BG = "/assets/sys/bgm_nosd_480x320.bz"
 
 class AppKernel:
 
@@ -47,8 +50,16 @@ class AppKernel:
 
         # 1. Displays
         display.init_all()
-        await display.show_splash("BUTTON", "BLASTERS",
-                                  bg_color=rgb(20, 10, 60))
+
+        # 1b. Seat the flash-asset sprite arena on the FRESHEST heap — before
+        # any subsystem (touch/audio/LEDs/SD) churns it, and before the boot
+        # card paints (paint_main_bg borrows the arena). One 96KB alloc.
+        flash_assets.init()
+
+        # Boot splash — baked card if present, else the text splash.
+        if not await display.paint_main_bg(_BOOT_BG):
+            await display.show_splash("BUTTON", "BLASTERS",
+                                      bg_color=rgb(20, 10, 60))
 
         # 2. Touch + shared I2C bus
         try:
@@ -94,13 +105,9 @@ class AppKernel:
             assets.build_index()
             self._load_scores()
         else:
-            await display.show_no_sd_warning()
+            if not await display.paint_main_bg(_NOSD_BG):
+                await display.show_no_sd_warning()
             await asyncio.sleep_ms(1500)
-
-        # 7b. Shared icon-load pool — allocate ONCE now, heap is freshest
-        # (~187KB contiguous). Icon games borrow slices at load instead of
-        # allocating, so the fragmentation MemoryError can't recur. SD-independent.
-        assets.alloc_icon_pool(slots=6, w=120, h=120)
 
         # 8. Startup sound
         await audio.play_sfx("startup.wav")
@@ -132,10 +139,13 @@ class AppKernel:
 
             game = game_cls(display, audio, leds, buttons, assets)
             await self._transition_to_game(game)
+            await self._menu.show_loading()
+            audio.stop_all()             # NEW — clean silence during install, not a stall
 
             print(f"[kernel] loading {game.GAME_ID}")
             if leds.ready:
                 leds.start_effect(leds.chase(100, 200, 100))
+            await game_cache.install(game.GAME_ID)      # NEW — Tier B install
             await game.load()
             leds.stop_effect()          # FIX: was leds.off() — off() left the
                                         # chase effect task running, which kept
@@ -159,15 +169,16 @@ class AppKernel:
             # and handled BACK/HOME, so we DON'T run the old blocking
             # _game_complete_sequence (that 2.5s splash swallowed BACK).
             leds.stop_effect()
-
+            
             # Optional non-blocking end voice (does not block BACK).
             if result.completed and audio.ready:
                 if result.high_score:
-                    await audio.play_voice("new_high_score.wav")
+                    await audio.play_voice("new_high_score.wav", wait=True)
                 else:
-                    await audio.play_voice("well_done.wav")
+                    await audio.play_voice("well_done.wav", wait=True)
 
             await game.unload()
+            game_cache.evict(game.GAME_ID)        # NEW — Tier B evict
             print(f"[kernel] unloaded {game.GAME_ID}")
 
     # NOTE: _game_complete_sequence() can stay defined in the file (unused
@@ -188,13 +199,12 @@ class AppKernel:
     # non-blocking effect (no SPI contention), so it's fine to start first.
 
     async def _transition_to_game(self, game):
+        # Each game now owns its own intro (e.g. Match It!'s category card), so
+        # the kernel no longer draws a generic GET READY splash or plays
+        # game_start.wav here — that removes a duplicated cue and a redundant
+        # transition. The LED flash stays: non-blocking, no SPI contention.
         if leds.ready:
             leds.start_effect(leds.flash(80, 80, 255, count=2))
-        await display.show_splash(game.TITLE, "GET READY!", rgb(20, 60, 20))
-        # Await the sound FULLY so the game's own first draw (load /
-        # countdown / first round) can't overlap it and tear.
-        await audio.play_sfx("game_start.wav", wait=True)
-        await asyncio.sleep_ms(400)
 
 
     async def _game_complete_sequence(self, result: GameResult):

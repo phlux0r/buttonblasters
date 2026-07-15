@@ -18,7 +18,7 @@
 #   Swipe left/right → scroll carousel
 
 import asyncio
-from core.display_manager import display, WHITE, YELLOW, BLACK, GREEN, rgb
+from core.display_manager import display, WHITE, YELLOW, BLACK, GREEN, DARK, rgb
 from drivers.audio import audio
 from drivers.leds import leds
 from drivers.buttons import buttons, BTN_PREV, BTN_NEXT, BTN_BACK
@@ -34,6 +34,10 @@ _CARD_COLORS = [
     rgb(80, 130,  20),
 ]
 
+_MENU_CARD = "/assets/menu/bgm_menu-%s_480x320.bz"   # % GAME_ID
+_MENU_TILE = "/assets/menu/btn_menu-%s_240x300.bz"   # % GAME_ID
+BTN_PREV_PATH = "/assets/menu/btn_prev_240x300.bz"
+BTN_NEXT_PATH = "/assets/menu/btn_next_240x300.bz"
 
 class Menu:
 
@@ -51,6 +55,13 @@ class Menu:
         buttons.clear()
         if leds.ready:
             leds.start_effect(leds.idle_rainbow())
+        # Static PREV/NEXT arrow cards — painted ONCE (button screens retain),
+        # so scrolling only repaints the two dynamic preview screens.
+        if not await display.paint_btn_bg(0, BTN_PREV_PATH):
+            await display.show_prev_indicator()
+        if not await display.paint_btn_bg(3, BTN_NEXT_PATH):
+            await display.show_next_indicator()
+        await self._render_full()
         await self._render_full()
 
         while True:
@@ -103,83 +114,109 @@ class Menu:
         await self._render_main_card()
         await self._render_btn_screens()
 
-# ── REPLACEMENT for Menu._render_main_card() in core/menu.py ─────────
-# Landscape 480×320 layout. Uses the wider canvas (bigger title) and
-# distributes elements across the shorter height. Only this one method
-# changes; _render_btn_screens() and everything else in menu.py stay
-# as-is (the button ST7789s are not affected by main-display rotation).
+    # ── REPLACEMENT for Menu._render_main_card() in core/menu.py ─────────
+    # Landscape 480×320 layout. Uses the wider canvas (bigger title) and
+    # distributes elements across the shorter height. Only this one method
+    # changes; _render_btn_screens() and everything else in menu.py stay
+    # as-is (the button ST7789s are not affected by main-display rotation).
 
-    async def _render_main_card(self):
-        game_cls = self._registry[self._idx]
-        bg       = _CARD_COLORS[self._idx % len(_CARD_COLORS)]
+    async def _render_main_card_procedural(self, game_cls):
+        bg     = _CARD_COLORS[self._idx % len(_CARD_COLORS)]
+        header = getattr(game_cls, "MENU_HEADER", None)
 
         await display.fill_main(bg)
+        cx = config.MAIN_W // 2
 
-        cx = config.MAIN_W // 2      # 240 in landscape
-
-        # Icon (optional, if present on SD) — top-centre
-        if game_cls.ICON_FILE and assets.sd_available:
-            await display.blit_main(game_cls.ICON_FILE, cx - 32, 24)
-            title_y = 96
-        else:
-            title_y = 60
-
-        # Title — scale 3 for the wide canvas, auto-dropping to scale 2
-        # if a long title would overflow 480px.
+        # Title — white, bold. On a full-width header band if the game defines
+        # MENU_HEADER (e.g. Match It!'s hot pink), else on the card colour.
         title  = game_cls.TITLE[:22]
-        tscale = 3 if (cx - len(title) * 12 >= 4 and
-                       len(title) * 24 <= config.MAIN_W) else 2
-        thalf  = 8 * tscale // 2                    # half char width
+        tscale = 3 if len(title) * 24 <= config.MAIN_W else 2
+        thalf  = 8 * tscale // 2
         tx     = max(4, cx - len(title) * thalf)
-        await display.text_main(title, tx, title_y, WHITE, bg, scale=tscale)
+        if header is not None:
+            await display.main.fill(header, 0, 0, config.MAIN_W, 56)
+            ty = (56 - 8 * tscale) // 2
+            await display.text_main(title, tx, ty, WHITE, header,
+                                    scale=tscale, bold=True)
+            body_y = 84
+        else:
+            body_y = 60
+            await display.text_main(title, tx, body_y, WHITE, bg,
+                                    scale=tscale, bold=True)
+            body_y += 8 * tscale + 12
 
-        # Description — one line under the title
+        # Icon (optional, if present on SD) — below the title
+        if game_cls.ICON_FILE and assets.sd_available:
+            await display.blit_main(game_cls.ICON_FILE, cx - 32, body_y)
+            body_y += 76
+
+        # Description — one line
         desc = game_cls.DESCRIPTION[:44]
-        dx   = max(4, cx - len(desc) * 4)          # scale 1 → char 8, half 4
-        await display.text_main(desc, dx, title_y + 40,
-                                rgb(200, 200, 200), bg, scale=1)
+        dx   = max(4, cx - len(desc) * 4)
+        await display.text_main(desc, dx, body_y, rgb(200, 200, 200), bg, scale=1)
 
-        # Stars — centred, scale 2
+        # Stars — BIGGER (scale 3), gold, centred
         stars    = self._stars.get(game_cls.GAME_ID, 0)
         star_str = ("*" * stars) + ("-" * (3 - stars))
-        sx = cx - len(star_str) * 8                # scale 2 → char 16, half 8
-        await display.text_main(star_str, sx, title_y + 66, YELLOW, bg, scale=2)
+        ssx = cx - len(star_str) * 12          # scale 3 -> char 24, half 12
+        await display.text_main(star_str, ssx, 272, YELLOW, bg, scale=3)
 
         # Tap hint — lower third
         hint = "TAP HERE TO PLAY"
-        hx   = cx - len(hint) * 8                   # scale 2
-        await display.text_main(hint, max(4, hx),
-                                config.MAIN_H - 70, WHITE, bg, scale=2)
+        hx   = cx - len(hint) * 8
+        await display.text_main(hint, max(4, hx), config.MAIN_H - 96,
+                                WHITE, bg, scale=2)
 
-        # Carousel dots — bottom edge, centred
+        # Carousel dots — bottom edge
         dot_total_w = self._n * 12
         dot_x0 = cx - dot_total_w // 2
-        dot_y  = config.MAIN_H - 22
+        dot_y  = config.MAIN_H - 16
         for i in range(self._n):
             col = WHITE if i == self._idx else rgb(80, 80, 80)
             await display.main.fill(col, dot_x0 + i * 12, dot_y, 8, 8)
 
-        # Battery indicator (top-right, if wired)
         await self._render_battery(bg)
-        
-    async def _render_btn_screens(self):
-        """BTN-0 = PREV, BTN-1 = prev game preview,
-           BTN-2 = next game preview, BTN-3 = NEXT."""
-        # BTN-0: PREV indicator
-        await display.show_prev_indicator(active=False)
 
-        # BTN-1: game at idx-1
+    async def _render_main_card(self):
+        game_cls = self._registry[self._idx]
+        gid      = game_cls.GAME_ID
+        cx       = config.MAIN_W // 2
+
+        # Baked per-game card (title / description / decoration all baked in).
+        if not await display.paint_main_bg(_MENU_CARD % gid):
+            await self._render_main_card_procedural(game_cls)
+            return
+
+        # Dynamic overlays on the card's flat zones:
+        # Stars — card's stars zone; colours per game (Match It! = pink on
+        # white), default gold-on-dark. 4px higher than before.
+        stars    = self._stars.get(gid, 0)
+        star_str = ("*" * stars) + ("-" * (3 - stars))
+        sfg = getattr(game_cls, "MENU_STARS_FG", YELLOW)
+        sbg = getattr(game_cls, "MENU_STARS_BG", DARK)
+        ssx = cx - len(star_str) * 12
+        await display.text_main(star_str, ssx, 268, sfg, sbg, scale=3)
+
+        # Carousel dots — footer.
+        dot_total_w = self._n * 12
+        dot_x0 = cx - dot_total_w // 2
+        dot_y  = config.MAIN_H - 16
+        for i in range(self._n):
+            col = WHITE if i == self._idx else rgb(80, 80, 80)
+            await display.main.fill(col, dot_x0 + i * 12, dot_y, 8, 8)
+
+        # Battery — header flat zone.
+        await self._render_battery(BLACK)
+
+    async def _render_btn_screens(self):
+        """BTN-1 = prev game preview, BTN-2 = next game preview.
+           BTN-0 (PREV) and BTN-3 (NEXT) are static — painted once in run()."""
         prev_idx = (self._idx - 1) % self._n
         await self._render_btn_game(1, prev_idx)
-
-        # BTN-2: game at idx+1
         next_idx = (self._idx + 1) % self._n
         await self._render_btn_game(2, next_idx)
 
-        # BTN-3: NEXT indicator
-        await display.show_next_indicator(active=False)
-
-    async def _render_btn_game(self, slot: int, game_idx: int):
+    async def _render_btn_game_procedural(self, slot: int, game_idx: int):
         game_cls = self._registry[game_idx]
         bg       = _CARD_COLORS[game_idx % len(_CARD_COLORS)]
         r        = (bg >> 11) << 3
@@ -206,6 +243,11 @@ class Menu:
             await display.text_btn(slot, sstr, sx,
                                    config.BTN_H // 2 + 44,
                                    YELLOW, 0x0000, scale=1)
+
+    async def _render_btn_game(self, slot: int, game_idx: int):
+        gid = self._registry[game_idx].GAME_ID
+        if not await display.paint_btn_bg(slot, _MENU_TILE % gid):
+            await self._render_btn_game_procedural(slot, game_idx)
 
     async def _render_battery(self, bg):
         if config.PIN_BAT_ADC is None:
@@ -237,3 +279,11 @@ class Menu:
             self._scores[game_id] = score
         if stars > self._stars.get(game_id, 0):
             self._stars[game_id] = stars
+
+    async def show_loading(self):
+        """Overwrite the stars zone with a LOADING banner while
+        game_cache installs this game's assets."""
+        cx = config.MAIN_W // 2
+        label = "WAIT..."
+        lx = cx - len(label) * 8
+        await display.text_main(label, lx, 270, 0xe681, 0xff9b, scale=2)

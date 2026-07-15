@@ -12,8 +12,11 @@
 
 import asyncio
 import framebuf
+import micropython
 from drivers.display import ILI9488, ST7789
 from drivers.assets import assets
+from drivers import flash_assets
+from core import game_cache
 import config
 
 # ── Colour constants (RGB565) ────────────────────────────────────
@@ -38,6 +41,18 @@ def rgb(r: int, g: int, b: int) -> int:
     """Convert 0-255 RGB to RGB565."""
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
+@micropython.viper
+def _fb_le_to_be(buf: ptr8, n_bytes: int):
+    # framebuf.RGB565 is little-endian on RP2350; both blit paths (the ILI9488
+    # rgb565_to_666 viper and the ST7789 direct stream) read big-endian, so
+    # swap the byte pairs before blitting or colours come out byte-swapped
+    # (0xEA16 pink -> green). Baked assets are already BE, so they never hit this.
+    i = 0
+    while i < n_bytes:
+        t = buf[i]
+        buf[i] = buf[i + 1]
+        buf[i + 1] = t
+        i += 2
 
 class DisplayManager:
 
@@ -95,13 +110,63 @@ class DisplayManager:
                            w: int, h: int, x=0, y=0):
         await self.btns[idx].blit_rgb565(memoryview(buf), x, y, w, h)
 
+    async def paint_main_bg(self, path):
+        """Stream a BE (kind 1) 480x320 background from flash to the main
+        display, one strip at a time via an arena-borrowed buffer. Returns
+        True if painted, False on any error (caller supplies the fallback)."""
+        bg = None
+        try:
+            bg = game_cache.open_background(path)
+            if not bg.big_endian:
+                raise ValueError("main bg must be BE (kind 1); got LE: " + path)
+            flash_assets.arena.reset()
+            buf = flash_assets.arena.alloc(bg.w * bg.strip_h * 2)
+            for i in range(bg.n_strips):
+                rows = bg.read_strip(i, buf)
+                await self.main.blit_rgb565(
+                    buf[:bg.w * rows * 2], 0, i * bg.strip_h, bg.w, rows)
+                await asyncio.sleep_ms(0)
+            return True
+        except Exception as e:
+            print("[display] main bg paint failed:", path, e)
+            return False
+        finally:
+            if bg is not None:
+                bg.close()
+            flash_assets.arena.reset()
+
+    async def paint_btn_bg(self, idx, path):
+        """Stream a BE (kind 1) 240x300 background from flash to button screen
+        idx, one strip at a time via an arena-borrowed buffer. Returns True if
+        painted, False on any error (caller supplies the fallback)."""
+        bg = None
+        try:
+            bg = game_cache.open_background(path)
+            if not bg.big_endian:
+                raise ValueError("btn bg must be BE (kind 1); got LE: " + path)
+            flash_assets.arena.reset()
+            buf = flash_assets.arena.alloc(bg.w * bg.strip_h * 2)
+            for i in range(bg.n_strips):
+                rows = bg.read_strip(i, buf)
+                await self.blit_btn_buf(
+                    idx, buf[:bg.w * rows * 2], bg.w, rows, x=0, y=i * bg.strip_h)
+                await asyncio.sleep_ms(0)
+            return True
+        except Exception as e:
+            print("[display] btn bg paint failed:", path, e)
+            return False
+        finally:
+            if bg is not None:
+                bg.close()
+            flash_assets.arena.reset()
+
     # ── Text rendering (8×8 framebuf font) ──────────────────────
 
     async def text_main(self, text: str, x: int, y: int,
-                        color=WHITE, bg=BLACK, scale=2):
+                        color=WHITE, bg=BLACK, scale=2, bold=False):
         char_w = 8 * scale
         char_h = 8 * scale
-        bw     = len(text) * char_w
+        bw     = len(text) * char_w + (1 if bold else 0)
         fb_buf = bytearray(bw * char_h * 2)
         fb     = framebuf.FrameBuffer(fb_buf, bw, char_h, framebuf.RGB565)
         fb.fill(bg)
@@ -109,6 +174,8 @@ class DisplayManager:
             tx = ci * char_w
             if scale == 1:
                 fb.text(ch, tx, 0, color)
+                if bold:
+                    fb.text(ch, tx + 1, 0, color)
             else:
                 tmp = bytearray(8 * 8 * 2)
                 tfb = framebuf.FrameBuffer(tmp, 8, 8, framebuf.RGB565)
@@ -117,10 +184,15 @@ class DisplayManager:
                 for row in range(8):
                     for col in range(8):
                         px = tfb.pixel(col, row)
+                        if px == bg:
+                            continue
                         for sr in range(scale):
                             for sc in range(scale):
-                                fb.pixel(tx + col*scale + sc,
-                                         row*scale + sr, px)
+                                fb.pixel(tx + col*scale + sc, row*scale + sr, px)
+                                if bold:
+                                    fb.pixel(tx + col*scale + sc + 1,
+                                             row*scale + sr, px)
+        _fb_le_to_be(fb_buf, len(fb_buf))
         await self.main.blit_rgb565(memoryview(fb_buf), x, y, bw, char_h)
 
     async def text_btn(self, idx: int, text: str, x: int, y: int,
@@ -133,8 +205,8 @@ class DisplayManager:
         fb.fill(bg)
         for ci, ch in enumerate(text):
             fb.text(ch, ci * char_w, 0, color)
-        await self.btns[idx].blit_rgb565(memoryview(fb_buf),
-                                          x, y, bw, char_h)
+        _fb_le_to_be(fb_buf, len(fb_buf))
+        await self.btns[idx].blit_rgb565(memoryview(fb_buf), x, y, bw, char_h)
 
     # ── Menu nav indicators ──────────────────────────────────────
 
@@ -178,16 +250,17 @@ class DisplayManager:
         """Yellow border = selected, black = deselected."""
         await self.draw_btn_border(idx, YELLOW if on else BLACK)
 
-    async def draw_score(self, score: int, lives: int = None):
+    async def draw_score(self, score: int, lives: int = None,
+                         color=YELLOW, bg=BLACK):
         """Score + optional lives in top-right of main screen."""
         score_str = f"SCORE:{score:04d}"
         x = config.MAIN_W - len(score_str) * 16 - 4
         await self.text_main(score_str, x, 4,
-                             color=YELLOW, bg=BLACK, scale=2)
+                             color=color, bg=bg, scale=2)
         if lives is not None:
             hearts = "v" * lives   # ♥ not in 8×8 font — use 'v'
             await self.text_main(hearts, 4, 4,
-                                 color=RED, bg=BLACK, scale=2)
+                                 color=RED, bg=bg, scale=2)
 
     async def draw_progress_bar(self, pct: float,
                                 x=0, y=None, w=None,
