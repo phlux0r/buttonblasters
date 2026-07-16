@@ -52,17 +52,18 @@ class BaseGame:
                              # (e.g. total matches) so stars scale to it instead
                              # of the flat fallback below.
 
-    def __init__(self, display, audio, leds, buttons, assets_mgr):
-        self.display  = display
-        self.audio    = audio
-        self.leds     = leds
-        self.buttons  = buttons
-        self.assets   = assets_mgr
-        self.score    = 0
-        self.lives    = 3
-        self.level    = 1
-        self._running = False
-        self._quit    = False
+    def __init__(self, display, audio, leds, buttons, assets_mgr, best_score=0):
+        self.display    = display
+        self.audio      = audio
+        self.leds       = leds
+        self.buttons    = buttons
+        self.assets     = assets_mgr
+        self.score      = 0
+        self.lives      = 3
+        self.level      = 1
+        self.best_score = best_score   # persisted high score, at game start
+        self._running   = False
+        self._quit      = False
 
     # ── Required overrides ───────────────────────────────────────
 
@@ -139,6 +140,22 @@ class BaseGame:
         if self.leds.ready:
             self.leds.start_effect(self.leds.level_up())
         await self.audio.play_voice("level_up.wav", wait=True)
+
+    async def announce_round_complete(self):
+        """End-of-round-set cheer. Call this once from the game's own end
+        screen, after the result is drawn, so the cue lands with "you
+        finished" rather than with "you're leaving" (that used to be played
+        by the kernel after the player chose to exit back to the carousel).
+        Compares against best_score (persisted at game start, and bumped
+        in-memory on 'play again' loops) so a beaten high score is caught
+        on every round-set, not just the final one before quitting."""
+        if not (self.audio and self.audio.ready):
+            return
+        if self.score > self.best_score:
+            self.best_score = self.score
+            await self.audio.play_voice("new_high_score.wav", wait=True)
+        else:
+            await self.audio.play_voice("well_done.wav", wait=True)
 
     async def show_game_over(self):
         if self.leds.ready:

@@ -137,7 +137,9 @@ class AppKernel:
             game_cls = await self._menu.run()
             self._touch()
 
-            game = game_cls(display, audio, leds, buttons, assets)
+            best_score = self._scores.get(game_cls.GAME_ID, {}).get("score", 0)
+            game = game_cls(display, audio, leds, buttons, assets,
+                            best_score=best_score)
             await self._transition_to_game(game)
             await self._menu.show_loading()
             audio.stop_all()             # NEW — clean silence during install, not a stall
@@ -169,13 +171,11 @@ class AppKernel:
             # and handled BACK/HOME, so we DON'T run the old blocking
             # _game_complete_sequence (that 2.5s splash swallowed BACK).
             leds.stop_effect()
-            
-            # Optional non-blocking end voice (does not block BACK).
-            if result.completed and audio.ready:
-                if result.high_score:
-                    await audio.play_voice("new_high_score.wav", wait=True)
-                else:
-                    await audio.play_voice("well_done.wav", wait=True)
+
+            # The end-of-round cheer (well_done.wav / new_high_score.wav) is
+            # played by the game itself, from its own end screen, via
+            # BaseGame.announce_round_complete() — right when a round-set
+            # finishes, not here at carousel-exit time.
 
             await game.unload()
             game_cache.evict(game.GAME_ID)        # NEW — Tier B evict

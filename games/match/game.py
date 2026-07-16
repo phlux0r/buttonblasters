@@ -362,6 +362,11 @@ class ShapeMatchGame(BaseGame):
             if not await self.display.paint_btn_bg(idx, REPLAY_TILE_PATH):
                 await self._show_replay_fallback(idx)
 
+        # All drawing for this screen is done — now the cheer, so playback
+        # doesn't overlap any SPI writes. This fires once per completed
+        # round-set (all 3 rounds), not at carousel-exit time.
+        await self.announce_round_complete()
+
         return await self._wait_end_choice()
 
     async def _wait_end_choice(self):
