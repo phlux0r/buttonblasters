@@ -1,9 +1,9 @@
 # 🎮 Button Blasters
 
-A DIY  handheld kids' game console built around the **RP2350 Pico**, featuring a 4" capacitive touchscreen, four button-mounted LCD screens, ambient LED lighting, and quality I2S audio. Designed for ages 2–7. Fully 3D-printed shell.
+A DIY handheld kids' game console built around the **Raspberry Pi Pico 2 W (RP2350)**, featuring a 4" capacitive touchscreen, four button-mounted LCD screens, ambient LED lighting, and quality I2S audio. Designed for ages 4–7. Fully 3D-printed shell.
 
-![MicroPython](https://img.shields.io/badge/MicroPython-1.23%2B-green.svg)
-![Platform: RP2040](https://img.shields.io/badge/Platform-RP2040-red.svg)
+![MicroPython](https://img.shields.io/badge/MicroPython-1.28.0-green.svg)
+![Platform: RP2350](https://img.shields.io/badge/Platform-RP2350-red.svg)
 ![Status: In Development](https://img.shields.io/badge/Status-In%20Development-yellow.svg)
 
 ---
@@ -14,23 +14,26 @@ Button Blasters is a handheld game console with a twist: **four of the six input
 
 The project is fully open-source: firmware, hardware design notes, and 3D print files (coming soon).
 
+> **Hardware bring-up is complete.** All confirmed pin assignments, driver-level gotchas, and bench-test results live in [`documents/HARDWARE_NOTES.md`](documents/HARDWARE_NOTES.md) — read that before touching `config.py` or the display/touch drivers.
+
 ---
 
 ## 📸 Hardware Overview
 
 | Component | Spec |
 |---|---|
-| MCU | RP2040 Pico (8 MB flash variant) |
-| Main display | ST7796 4.0" 480×320 capacitive touch (FT6336 / GT911) |
-| Button LCDs | 4× ST7789 1.69" 240×280 TFT |
-| Storage | microSD card (bitmaps + audio) |
+| MCU | Raspberry Pi Pico 2 W (RP2350, 4 MB flash) |
+| Main display | ILI9488 4.0" IPS 480×320, FT6236 capacitive touch, 18-bit RGB666 |
+| Button LCDs | 4× ST7789 1.69" 240×300 (effective), RGB565 |
+| Storage | microSD card via separate SPI breakout (bitmaps + audio) |
 | Audio | MAX98357A I2S DAC + amp → 40mm 3W 4Ω speaker |
-| LEDs | WS2812B strip (8–12 LEDs, shell edge) |
-| Haptic | ERM coin vibration motor |
-| Power | LiPo 3.7V 2000mAh + TP4056 USB-C charger |
+| LEDs | WS2812B strip (8 LEDs, shell edge) via 74AHCT125 level shifter |
+| Haptic | ERM coin vibration motor via 2N3904 NPN transistor |
+| GPIO expander | MCP23008 I²C DIP-8 (0x20) — all physical buttons + battery ADC line |
+| Power | LiPo 3.7V 2000mAh + TP4056 USB-C charger (wiring pending) |
 | Shell | 3D-printed PLA+ or PETG |
 
-**Estimated battery life:** ~7–8 hours typical play.
+**Dev environment:** MicroPython v1.28.0 (RPI_PICO2_W build), VS Code + MicroPico extension.
 
 ---
 
@@ -39,31 +42,44 @@ The project is fully open-source: firmware, hardware design notes, and 3D print 
 ```
 buttonblasters/
 ├── main.py                  # Entry point — boots kernel
-├── config.py                # All pin assignments & constants (edit this)
+├── config.py                # Hardware-verified pin map & constants (edit this)
+├── sdcard.py                # SD card block driver (FAT filesystem)
 │
 ├── drivers/
-│   ├── spi_bus.py           # Shared SPI0 bus with asyncio locking
-│   ├── display.py           # ST7796 (main) + ST7789 (buttons) drivers
-│   ├── touch.py             # FT6336 / GT911 capacitive touch driver
-│   ├── buttons.py           # Physical buttons + touch unified event queue
-│   ├── audio.py             # I2S streaming, 2-channel voice/SFX mixer
-│   ├── leds.py              # WS2812B via RP2040 PIO (zero CPU overhead)
-│   ├── haptic.py            # ERM motor pulse patterns
-│   └── assets.py            # SD card mount, image index, async loader
+│   ├── spi_bus.py           # Shared SPI0 bus, asyncio-locked, cache-aware freq switching
+│   ├── display.py           # ILI9488 (main) + ST7789 (buttons) drivers
+│   ├── touch.py             # FT6236 capacitive touch driver
+│   ├── buttons.py           # MCP23008-polled buttons + touch, unified event queue
+│   ├── audio.py             # I2S streaming via IRQ callback (non-blocking)
+│   ├── leds.py               # WS2812B via RP2040 PIO
+│   ├── strip_renderer.py    # LED effect sequencing (asyncio tasks)
+│   ├── haptic.py             # ERM motor pulse patterns
+│   ├── assets.py             # SD card mount, image index, async loader
+│   └── flash_assets.py      # On-flash fallback asset loading
 │
 ├── core/
-│   ├── kernel.py            # Boot sequence, task tree, game↔menu cycle
-│   ├── menu.py              # Animated game carousel with swipe navigation
-│   ├── display_manager.py   # High-level drawing API for games
-│   └── game_base.py         # BaseGame abstract class
+│   ├── kernel.py             # Boot sequence, task tree, game↔menu cycle
+│   ├── menu.py                # Animated game carousel with swipe navigation
+│   ├── display_manager.py    # High-level drawing API for games
+│   ├── game_base.py          # BaseGame abstract class
+│   ├── game_cache.py         # Per-game asset caching
+│   ├── sprite_engine.py      # Sprite compositing/animation
+│   └── sprite_adapter.py     # Bridges sprite engine to display_manager
 │
-└── games/
-    ├── registry.py          # Register games here (one line each)
-    └── example/
-        └── game.py          # Fully working game template — copy to start
+├── graphics_speed/
+│   └── rgb666_viper.py       # @micropython.viper RGB565→RGB666 band converter (31x speedup)
+│
+├── games/
+│   ├── registry.py           # Register games here (one line each)
+│   ├── example/              # Working game template — copy to start a new game
+│   └── match/                # Shape Match — first playable game (shapes/letters/numbers)
+│
+├── assets/                   # Bitmaps checked into the repo (menu, sys, per-game)
+├── documents/                 # Hardware notes, narrator script, family recording guide
+└── tests/                     # Hardware bring-up + performance test scripts (see below)
 ```
 
-The firmware uses **MicroPython asyncio** for cooperative multitasking. All five displays share a single SPI bus via a lock; touch, buttons, LEDs, and audio each run as independent background tasks.
+The firmware uses **MicroPython asyncio** for cooperative multitasking. All five displays share a single SPI bus via a lock; touch, buttons (via MCP23008), LEDs, and audio each run as independent background tasks.
 
 ---
 
@@ -109,12 +125,12 @@ That's it. The kernel handles the menu card, transitions, score saving, back but
 
 ### Input API
 
-Both physical buttons and touch events arrive from the same queue:
+Physical buttons (via MCP23008) and touch events arrive from the same queue:
 
 ```python
 # Physical buttons
 btn = await self.wait_screen_button()       # blocks until btn 0-3 pressed
-btn = await self.wait_any_button()          # any button including nav
+btn = await self.wait_any_button()          # any button including BACK
 
 # Touch
 x, y = await self.wait_tap()               # blocks until screen tap
@@ -131,11 +147,13 @@ await self.show_level_up()   # rainbow LEDs + voice clip
 await self.countdown(3)      # 3-2-1-GO! with audio
 ```
 
+> `wait_screen_button()` does not return the BACK button (id 4) — games that need BACK-to-quit must poll `buttons._queue` directly. See `games/example/game.py` or `games/match/game.py`.
+
 ---
 
 ## 🖼 Asset Pipeline
 
-All bitmaps and audio are stored on the microSD card.
+All bitmaps and audio are stored on the microSD card (with an on-flash fallback via `drivers/flash_assets.py`).
 
 ### SD Card Layout
 
@@ -148,6 +166,8 @@ All bitmaps and audio are stored on the microSD card.
     sfx/             ← short sound effects  (ding.wav, wrong.wav …)
     voice/           ← voice clips          (correct.wav, well_done.wav …)
     music/           ← background loops     (menu.wav …)
+  adventure/
+    stories/         ← JSON story data for "My Big Day Out"
   scores.json        ← auto-generated, do not edit
 ```
 
@@ -165,6 +185,8 @@ Convert from PNG using ffmpeg:
 ffmpeg -i input.png -vf scale=64:64 -pix_fmt rgb565le output_64x64.raw
 ```
 
+The main display consumes 18-bit RGB666, not RGB565 — bitmaps stay RGB565 on disk and are converted band-by-band at draw time by `graphics_speed/rgb666_viper.py` (see hardware notes for why this can't be a full-buffer conversion).
+
 ### Audio Format
 
 16-bit signed PCM WAV, mono, 22050 Hz:
@@ -176,31 +198,39 @@ ffmpeg -i input.mp3 -ar 22050 -ac 1 -acodec pcm_s16le output.wav
 
 ## ⚡ GPIO Pin Map
 
+Confirmed via hardware bring-up tests 1–14 (see `tests/`). Full context and rationale for each pin choice is in [`documents/HARDWARE_NOTES.md`](documents/HARDWARE_NOTES.md).
+
 | GPIO | Function |
 |---|---|
-| GP0 | I²C SDA (touch IC) |
-| GP1 | I²C SCL (touch IC) |
-| GP2 | TOUCH_INT (interrupt) |
-| GP3 | SPI SCK |
-| GP4 | SPI MOSI |
-| GP5 | SPI MISO |
-| GP6 | CS — ST7796 main display |
+| GP0 | I2S BCLK → MAX98357A |
+| GP1 | I2S LRC → MAX98357A |
+| GP2 | DC — ST7789 BTN-0 |
+| GP3 | SD_CS (SD breakout) |
+| GP4 | SPI MISO |
+| GP5 | **DEAD — do not use** (reads 0V regardless of `Pin.OUT` value) |
+| GP6 | CS — ILI9488 main display |
 | GP7–10 | CS — ST7789 button LCDs 0–3 |
-| GP11 | CS — SD card |
-| GP12 | DC — ST7796 |
-| GP13–16 | DC — ST7789 0–3 |
-| GP17 | RST — ST7796 |
-| GP18 | RST — ST7789 (shared) |
-| GP19–22 | Screen buttons 0–3 |
-| GP23 | I2S BCLK |
-| GP24 | I2S LRC |
-| GP25 | I2S DIN |
-| GP26 | Battery ADC (100kΩ + 100kΩ divider) |
-| GP27 | NAV BACK button |
-| GP28 | WS2812B data (via 74AHCT1G125) |
-| GP29 | Haptic motor (via NPN transistor) |
+| GP11 | DC — ST7789 BTN-1 |
+| GP12 | DC — ILI9488 main |
+| GP13 | BLK — ST7789 backlight (driven HIGH from GPIO, not tied to 3.3V) |
+| GP14 | DC — ST7789 BTN-2 |
+| GP15 | RST — ST7789 (shared) |
+| GP16 | I2S DIN → MAX98357A |
+| GP17 | RST — ILI9488 main |
+| GP18 | SPI SCK |
+| GP19 | SPI MOSI |
+| GP20 | WS2812B data → 74AHCT125 level shifter |
+| GP21 | DC — ST7789 BTN-3 |
+| GP22 | Haptic motor → 2N3904 |
+| GP26 | I²C SDA (FT6236 touch + MCP23008 expander, shared bus) |
+| GP27 | I²C SCL |
+| GP28 | TOUCH_INT only — not a nav button |
+| GP23/24/25/29 | WiFi internal — **never connect anything** |
+| MCP23008 GP0–3 | Screen buttons 0–3 |
+| MCP23008 GP4 | BACK/HOME button |
+| MCP23008 GP5 | Battery ADC signal (not yet wired) |
 
-> **Note:** WS2812B LEDs need 5V data logic. Use a 74AHCT1G125 single-gate buffer between GP28 and the LED strip DIN pin.
+> **Note:** WS2812B LEDs need 5V data logic. A 74AHCT125 level shifter sits between GP20 and the LED strip DIN pin.
 
 ---
 
@@ -208,8 +238,8 @@ ffmpeg -i input.mp3 -ar 22050 -ac 1 -acodec pcm_s16le output.wav
 
 ### Flash MicroPython
 
-1. Hold BOOTSEL on the Pico and plug into USB — it mounts as a drive
-2. Download the latest MicroPython `.uf2` from [micropython.org](https://micropython.org/download/rp2-pico/)
+1. Hold BOOTSEL on the Pico 2 W and plug into USB — it mounts as a drive
+2. Download the RPI_PICO2_W MicroPython `.uf2` (v1.28.0+) from [micropython.org](https://micropython.org/download/rpi_pico2_w/)
 3. Drag the `.uf2` onto the Pico drive — it reboots automatically
 
 ### Install the Firmware
@@ -224,25 +254,24 @@ Or use **VS Code + MicroPico extension** for a GUI workflow (see IDE section bel
 
 ### Prepare the SD Card
 
-Format as FAT32 and create the directory structure shown above. Copy your bitmap and audio assets into the appropriate folders.
+Format as FAT32 and create the directory structure shown above. Copy your bitmap and audio assets into the appropriate folders. Use a **separate SPI SD breakout**, not the slot built into the ILI9488 display module — see `documents/HARDWARE_NOTES.md` for why the built-in slot can't be used alongside the display.
 
 ### Configuration
 
-All hardware pin assignments and tunable constants live in **`config.py`**. This is the only file you need to edit when adapting to a different PCB layout or module variant.
+All hardware pin assignments and tunable constants live in **`config.py`**, and are already set to the confirmed-working values for this build. Don't change pin assignments without re-running the relevant bring-up test in `tests/`.
 
-Key settings to check for your specific touch module:
+Touch orientation must match your display rotation — see the Display Orientation section of `documents/HARDWARE_NOTES.md` before changing any of these:
 ```python
-TOUCH_IC      = "FT6336"    # or "GT911"
-TOUCH_SWAP_XY = False       # True if axes are transposed
-TOUCH_FLIP_X  = False       # True if X is mirrored
-TOUCH_FLIP_Y  = False       # True if Y is mirrored
+TOUCH_SWAP_XY = True   # confirmed for landscape (MADCTL 0x28)
+TOUCH_FLIP_X  = False
+TOUCH_FLIP_Y  = True
 ```
 
 ---
 
 ## 💻 Recommended IDE
 
-**VS Code + [MicroPico extension](https://marketplace.visualstudio.com/items?itemName=paulober.pico-w-go)**
+**VS Code + [MicroPico extension](https://marketplace.visualstudio.com/items?itemName=paulober.pico-w-go)** (tested with v4.3.4)
 
 - Syncs your project folder to the Pico in one click
 - Integrated MicroPython REPL in the terminal panel
@@ -254,27 +283,39 @@ TOUCH_FLIP_Y  = False       # True if Y is mirrored
 
 ---
 
-## 🎮 Planned Games
+## 🎮 Game Library
+
+**Playable now:**
 
 | Game | Type | Uses touch? |
 |---|---|---|
-| Shape Match | Matching | Partial |
-| Button Memory | Memory sequence | No |
+| Shape Match (`games/match`) | Matching — shapes, letters, numbers, expanding pool | Partial |
+
+**Planned** (registered but commented out in `games/registry.py` until implemented):
+
+| Game | Type | Uses touch? |
+|---|---|---|
+| Button Memory | Simon-style sequence | No |
 | Star Bonk | Reaction | No |
 | Count It! | Counting | Yes — tap to count |
-| Colour Quest | Exploration | Yes |
-| Beat Along | Rhythm | Yes — drum pads |
-| *(your game here)* | | |
+| Magic Sort | Drag and drop sorting | Yes |
+| Feed the Animal | Swipe gestures | Yes |
+| Magic Bakery | Collect ingredients | Yes |
+| Shadow Match | Silhouette identification | Yes |
+| Garden Grow | Swipe to water/sun | Yes |
+| My Big Day Out | Personalised branching adventure (flagship) | Yes |
+
+**My Big Day Out** is the flagship game: child picks an avatar, family photos get converted to a cartoon style, family members record their own voice lines plus a main narrator, and the branching story is driven by JSON on the SD card (`/sd/adventure/stories/`). Art direction is a soft rounded Bluey/Hey Duggee aesthetic.
 
 ---
 
 ## 🔌 Power & Charging
 
 - **Battery:** LiPo 3.7V 2000mAh (503759 or similar flat cell)
-- **Charger:** TP4056 module **with DW01 protection IC** — essential for a kids' device
+- **Charger:** TP4056 module **with DW01 protection IC** — essential for a kids' device — wiring not yet done
 - **Charging:** USB-C, ~2 hours to full
 - **Switch:** SPDT slide switch on the 3.3V regulated rail
-- **Battery indicator:** Shown on main screen via ADC voltage divider
+- **Battery indicator:** Planned via MCP23008 GP5 ADC line — not yet wired
 
 ---
 
