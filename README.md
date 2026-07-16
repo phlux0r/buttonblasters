@@ -1,6 +1,6 @@
 # 🎮 Button Blasters
 
-A DIY  handheld kids' game console built around the **RP2040 Pico**, featuring a 4" capacitive touchscreen, four button-mounted LCD screens, ambient LED lighting, and quality I2S audio. Designed for ages 4–7. Fully 3D-printed shell.
+A DIY  handheld kids' game console built around the **RP2350 Pico**, featuring a 4" capacitive touchscreen, four button-mounted LCD screens, ambient LED lighting, and quality I2S audio. Designed for ages 2–7. Fully 3D-printed shell.
 
 ![MicroPython](https://img.shields.io/badge/MicroPython-1.23%2B-green.svg)
 ![Platform: RP2040](https://img.shields.io/badge/Platform-RP2040-red.svg)
