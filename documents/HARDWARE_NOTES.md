@@ -184,6 +184,57 @@ Additional targeted probes (not full bring-up tests, used to diagnose the gotcha
 
 ---
 
+## Star Bonk! — sprite_engine Integration (first real use, NOT bench-verified)
+
+Star Bonk (`games/bonk/`) is the first game to actually wire up
+`core/sprite_engine.py` + `drivers/strip_renderer.py` + `core/sprite_adapter.py`
+— everything below is new as of this game and needs a real hardware pass
+before trusting it, same as anything else in this doc marked unverified.
+
+### Why sprite_engine instead of the simple direct-blit path Match It! uses
+
+A target pops up at a genuinely random position every spawn and must
+cleanly reveal the real board underneath when it disappears — the simple
+`blit_rgb565` path Match uses (same fixed slot every time, opaque icon,
+no erase needed) can't do that without either a full-screen repaint per
+hit (too slow for a reaction game) or constraining the board to a flat
+erase-colour play zone (visually limiting). `sprite_engine`'s dirty-strip
+compositing against a real LE background solves this properly — moving/
+removing a sprite naturally re-reveals the actual board pixels.
+
+### Asset spec (endianness/colour-key mistakes here fail loudly, not silently)
+
+Each of the 4 characters (wizard, goblin, star, mushroom) needs **two**
+baked sprites — one per rendering path:
+
+| Asset | Format | Purpose |
+|---|---|---|
+| `bonk/spr_<name>_96x96x1.sz` | **LE**, kind 2, magenta-keyed (`0xF81F`) | Main-screen target — sprite_engine reads this |
+| `bonk/sprb_<name>_96x96x1.sz` | **BE**, kind 3, opaque | Button-screen legend icon — plain `blit_btn_buf`, same convention as Match's icons |
+| `bonk/bg_bonk_480x320.bz` | **LE**, kind 0, `strip_h=32` | Main board — can be fully illustrated everywhere now (no flat-colour play-zone constraint) |
+| `menu/bgm_menu-bonk_480x320.bz` | BE, kind 1 | Menu card (optional — `core/menu.py` falls back to a procedural card if missing) |
+
+`strip_h` on the board **must** be 32 to match `sprite_engine.STRIP_H` — `SpriteEngine.set_background()` raises if it doesn't. `tools/deploy.py` now splits Tier A (`sprb_`/`spr_`, small, permanent littlefs) from Tier B (`bgm_`/`bg_`, large, SD-installed at game load) by filename prefix for any game folder, not just Match's — Bonk needed no deploy.py changes beyond that generalization.
+
+Missing/invalid assets degrade gracefully: a bad character sprite drops that character from the round's spawn pool (fewer live types, not a crash); a missing/invalid board falls back to an in-memory flat-colour `_FlatBackground` stub (in `games/bonk/game.py`) so the mechanic stays testable before art exists — mirrors Match's per-icon coloured-placeholder fallback.
+
+### What's genuinely new/unverified here
+
+- **First real `StripRenderer` hardware wiring.** `core/sprite_adapter.make_main_strip_renderer()` constructs fresh `Pin` objects for `PIN_CS_MAIN`/`PIN_DC_MAIN` and binds `spi_bus.spi` + `spi_bus.set_freq` — reasoned to be safe (same physical pins ILI9488's own driver already idles high, no concurrent user), but never bench-tested.
+- **150KB `StripBufferPool`, held for the whole game via `MainScreenAdapter.open()`/`close()`.** On top of the 96KB flash_assets arena (always seated) and Bonk's own small ~20KB legend arena, this needs a real free-heap check at game load — `StripBufferPool` hard-fails with a diagnostic `MemoryError` if it can't seat (by design, not a bug to paper over), but if it doesn't fit, `core/kernel.py`'s `game.load()` call has no exception handling around it, so a failed seat currently crashes the whole app rather than gracefully declining to launch. Worth a bench check before relying on this in front of a kid.
+- **`StripRenderer`'s blocking transmit path does not take `spi_bus`'s lock** — it writes to `spi_bus.spi` directly, bypassing the `device()`/`raw()` serialization every other SPI0 consumer uses. Reasoned to be safe for Bonk specifically because everything in its `run()` loop is awaited sequentially and the only concurrent background activity (LED/haptic/audio bonk-feedback) never touches SPI0. **This becomes a real hazard if a future game uses `SpriteEngine.start()`'s continuous background tick loop** (an independent asyncio task redrawing on a timer) concurrently with anything else touching SPI0 (another display draw, an SD read) — that combination has not been reasoned through and should not be assumed safe.
+- **The DMA transmit seam is unused here** — Bonk runs the blocking `_start_transmit`/`_wait_transmit` implementation, matching the "not yet verified" status the seam already carried in the Soldered-Board Follow-Ups section below.
+
+### Gameplay assumptions (tunable, not hardware facts — flagged since the design synopsis didn't pin these down)
+
+- `ROUND_HITS = 8` bonks per round (24 total across 3 rounds) — arbitrary, easy to retune.
+- `TARGET_POINTS`: wizard=1, goblin=2, star=3, mushroom=4 — ordering matches the fixed button legend order (BTN-0..3), no gameplay difference in spawn odds by value.
+- Speed curve: 2000ms reaction window at the start, -200ms every 10 hits (running total, not reset per round), floored at 700ms.
+- A missed/timed-out target is never penalised — it just despawns and a new one spawns, matching this console's low-pressure design for ages 4-7.
+- "Tap anywhere near" is implemented as a 24px hit-pad on all sides of the 96×96 sprite (144×144 effective hit zone).
+
+---
+
 ## Soldered-Board Follow-Ups (performance headroom, bench-gated)
 
 Deliberately not attempted on the breadboard — each needs a bench pass on
@@ -216,6 +267,9 @@ Confirmed done:
 - Landscape rotation confirmed end-to-end — display (`MADCTL 0x28`) + touch mapping.
 - Graphics speed pass done — viper-banded RGB565→666 conversion, big-chunk fills, reusable blit scratch buffer.
 - Shape Match playable end-to-end (`games/match`).
+
+In progress, needs a bench pass (see Star Bonk section above for detail):
+- Star Bonk (`games/bonk`) — code complete, registered, but genuinely untested on hardware. Blocking before it's trustworthy: bake the 10 required assets (see asset spec table above), confirm the 150KB StripBufferPool actually seats alongside everything else at game load, and confirm the first-ever StripRenderer hardware wiring (CS/DC pins, blocking transmit) actually paints correctly.
 
 Outstanding:
 - Asset pipeline: family photos → stylised art → RGB565 conversion.

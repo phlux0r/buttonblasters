@@ -72,16 +72,42 @@ def stage():
     # Tier A assets — permanent littlefs residents.
     shutil.copytree(REPO / "assets" / "menu", STAGE_FW / "assets" / "menu")
     shutil.copytree(REPO / "assets" / "sys",  STAGE_FW / "assets" / "sys")
-    static_match = STAGE_FW / "assets" / "static" / "match"
-    static_match.mkdir(parents=True)
-    for f in (REPO / "assets" / "match").glob("sprb_*.sz"):
-        shutil.copy2(f, static_match / f.name)
 
-    # Tier B assets — SD payload, installed to flash per-game at load time.
-    sd_match = STAGE_SD / "assets" / "match"
-    sd_match.mkdir(parents=True)
-    for f in (REPO / "assets" / "match").glob("bgm_*.bz"):
-        shutil.copy2(f, sd_match / f.name)
+    # Per-game asset split, by filename prefix (applies to every game
+    # folder under assets/ except menu/sys, which are handled above):
+    #   sprb_*, spr_*  (small sprites, .sz)   -> Tier A, /assets/static/<id>/
+    #   bgm_*,  bg_*   (large backgrounds,    -> Tier B, staged for the SD
+    #                   .bz)                     card, installed by
+    #                                             game_cache at game load
+    SPRITE_PREFIXES     = ("sprb_", "spr_")
+    BACKGROUND_PREFIXES = ("bgm_", "bg_")
+    SKIP_DIRS = {"menu", "sys"}
+    for game_dir in sorted((REPO / "assets").iterdir()):
+        if not game_dir.is_dir() or game_dir.name in SKIP_DIRS:
+            continue
+        game_id = game_dir.name
+        sprites = [f for f in game_dir.glob("*.sz")
+                  if f.name.startswith(SPRITE_PREFIXES)]
+        backgrounds = [f for f in game_dir.glob("*.bz")
+                      if f.name.startswith(BACKGROUND_PREFIXES)]
+
+        if sprites:
+            static_dir = STAGE_FW / "assets" / "static" / game_id
+            static_dir.mkdir(parents=True)
+            for f in sprites:
+                shutil.copy2(f, static_dir / f.name)
+
+        if backgrounds:
+            sd_dir = STAGE_SD / "assets" / game_id
+            sd_dir.mkdir(parents=True)
+            for f in backgrounds:
+                shutil.copy2(f, sd_dir / f.name)
+
+        unclassified = (set(game_dir.glob("*.sz")) | set(game_dir.glob("*.bz"))) \
+                        - set(sprites) - set(backgrounds)
+        for f in sorted(unclassified):
+            print(f"[deploy] warning: {f} matches no known prefix "
+                 f"({SPRITE_PREFIXES + BACKGROUND_PREFIXES}) — not staged")
 
 
 def cross_compile():

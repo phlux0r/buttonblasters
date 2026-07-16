@@ -14,6 +14,15 @@
 #   3. Register in games/registry.py
 
 import asyncio
+import random
+
+
+def shuffle(lst):
+    # MicroPython's random has choice() but not shuffle(); Fisher-Yates.
+    # Shared here since every game that picks a random subset needs it.
+    for i in range(len(lst) - 1, 0, -1):
+        j = random.randint(0, i)
+        lst[i], lst[j] = lst[j], lst[i]
 
 
 class GameResult:

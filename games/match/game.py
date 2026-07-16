@@ -46,7 +46,7 @@ import time
 import asyncio
 import random
 import config
-from core.game_base import BaseGame, GameResult
+from core.game_base import BaseGame, GameResult, shuffle
 from core.display_manager import (rgb, WHITE, YELLOW, RED, GREEN, BLUE,
                                    CYAN, MAGENTA, ORANGE, DARK)
 from drivers import flash_assets
@@ -92,13 +92,6 @@ INTRO_PATH    = "/assets/match/bgm_intro-%s_480x320.bz"  # % cat; BE, kind 1
 INTRO_HOLD_MS = 400       # extra beat the category card stays up (tunable)
 RESULT_PATH    = "/assets/match/bgm_result_480x320.bz"  # BE, kind 1
 RESULT_SCORE_Y = 108      # score overlay y (scale-4, in the card's flat zone)
-
-
-def _shuffle(lst):
-    # MicroPython random has choice() but not shuffle(); Fisher-Yates.
-    for i in range(len(lst) - 1, 0, -1):
-        j = random.randint(0, i)
-        lst[i], lst[j] = lst[j], lst[i]
 
 
 def _fb_idx(name):
@@ -156,7 +149,7 @@ class ShapeMatchGame(BaseGame):
                     await self.display.fill_main(DARK)
 
                 order = list(ITEMS[cat])
-                _shuffle(order)
+                shuffle(order)
 
                 for m in range(MATCHES_PER_ROUND):
                     if await self.check_back():
@@ -213,7 +206,7 @@ class ShapeMatchGame(BaseGame):
     def _layout_match(self, cat, target):
         items = ITEMS[cat]
         others = [x for x in items if x != target]
-        _shuffle(others)
+        shuffle(others)
         distractors = others[:3]
 
         correct_idx = random.randint(0, 3)

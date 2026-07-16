@@ -298,13 +298,15 @@ TOUCH_FLIP_Y  = True
 | Game | Type | Uses touch? |
 |---|---|---|
 | Shape Match (`games/match`) | Matching — shapes, letters, numbers, expanding pool | Partial |
+| Star Bonk! (`games/bonk`) | Reaction — tap the target before it disappears | Yes — primary input |
+
+Star Bonk! is the first game to use `core/sprite_engine.py` + `drivers/strip_renderer.py` for real (targets pop up at genuinely random positions and need clean erase-and-reveal against the illustrated board — see `documents/HARDWARE_NOTES.md`'s Star Bonk section for the full asset spec and the bench checks still needed before trusting it on hardware).
 
 **Planned** (registered but commented out in `games/registry.py` until implemented):
 
 | Game | Type | Uses touch? |
 |---|---|---|
 | Button Memory | Simon-style sequence | No |
-| Star Bonk | Reaction | No |
 | Count It! | Counting | Yes — tap to count |
 | Magic Sort | Drag and drop sorting | Yes |
 | Feed the Animal | Swipe gestures | Yes |

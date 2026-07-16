@@ -21,10 +21,9 @@ wire when the ST7789 driver object is at hand.
 
 Usage in a game:
 
-    from drivers import strip_renderer            # or wherever it lives
-    from core.sprite_adapter import MainScreenAdapter
+    from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
 
-    adapter = MainScreenAdapter(renderer)         # renderer = StripRenderer
+    adapter = MainScreenAdapter(make_main_strip_renderer())
     adapter.open()                                # at load(): seats the pool
     try:
         eng = SpriteEngine(adapter, bg)
@@ -34,7 +33,24 @@ Usage in a game:
         adapter.close()                           # at unload(): frees 150KB
 """
 
-from drivers.strip_renderer import RGB565_STRIP, DISPLAY_FREQ
+from machine import Pin
+from drivers.spi_bus import spi_bus
+from drivers.strip_renderer import StripRenderer, RGB565_STRIP, DISPLAY_FREQ
+import config
+
+
+def make_main_strip_renderer():
+    """Construct a StripRenderer wired to the ILI9488 main display's real
+    CS/DC pins and the shared SPI0 bus. Each call makes its own Pin handles
+    for GP{PIN_CS_MAIN,PIN_DC_MAIN} — MicroPython allows multiple Pin
+    objects for the same GPIO, and only one code path (this renderer, or
+    the normal ILI9488 fill/blit path) ever drives the main display within
+    a single game, so there's no contention. First real caller of
+    StripRenderer/sprite_engine — see HARDWARE_NOTES.md before assuming the
+    150KB buffer pool and the blocking transmit path are bench-verified."""
+    cs = Pin(config.PIN_CS_MAIN, Pin.OUT, value=1)
+    dc = Pin(config.PIN_DC_MAIN, Pin.OUT, value=1)
+    return StripRenderer(spi_bus.spi, cs, dc, spi_bus.set_freq)
 
 
 def _freq_noop(hz):

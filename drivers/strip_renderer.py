@@ -48,16 +48,18 @@ import gc
 import asyncio
 import micropython
 from micropython import const
+import config
 
-# --- geometry / freqs (import these from config on the real build) --------
-MAIN_W       = const(480)
-MAIN_H       = const(320)
-STRIP_H      = const(32)               # 10 even bands for a 320-row screen
-DISPLAY_FREQ = const(10_000_000)       # confirmed stable on breadboard
-SD_FREQ      = const(400_000)          # breadboard SD ceiling (EIO above 1.32MHz)
+# --- geometry / freqs, sourced from config (single source of truth) -------
+MAIN_W       = config.MAIN_W
+MAIN_H       = config.MAIN_H
+STRIP_H      = const(32)               # compositing granularity -- must
+                                        # match core/sprite_engine.py's STRIP_H
+DISPLAY_FREQ = config.SPI_FREQ_DISPLAY
+SD_FREQ      = config.SPI_FREQ_SD_DATA
 
-RGB666_STRIP = const(MAIN_W * STRIP_H * 3)   # 46,080 B  (wire format)
-RGB565_STRIP = const(MAIN_W * STRIP_H * 2)   # 30,720 B  (SD source strip)
+RGB666_STRIP = MAIN_W * STRIP_H * 3   # 46,080 B  (wire format)
+RGB565_STRIP = MAIN_W * STRIP_H * 2   # 30,720 B  (SD source strip)
 
 # ILI9488 commands
 _CASET = const(0x2A)
