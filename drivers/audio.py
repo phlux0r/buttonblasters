@@ -19,21 +19,29 @@
 #   1. /assets/<game_id>/audio/<kind>/   Tier B — installed from SD by
 #      game_cache at game load (littlefs; no SPI0 traffic to play)
 #   2. /assets/audio/<kind>/             littlefs, deployed shared clips
-#   3. /sd/audio/<kind>/                 SD directly — bus-locked at 400kHz
+#   3. /sd/audio/<kind>/                 SD directly, UNMANAGED (see below)
 #   4. _SYNTH_MAP tone                   fallback when no file exists
 #
-# SD streaming is a LAST RESORT on this breadboard: a 4KB chunk takes
-# ~82ms to read at 400kHz but holds only ~93ms of audio, so playback
-# barely keeps up and monopolises the shared bus. Put per-game clips
-# under /sd/assets/<game_id>/audio/ so game_cache installs them to
-# flash, or deploy shared clips to /assets/audio/.
+# SD reads here do NOT bracket the shared SPI0 bus at the SD-safe clock
+# (unlike every other SD consumer — read_file(), game_cache, kernel score
+# I/O). That's a deliberate, known trade: bracketing every ~4KB chunk read
+# in spi_bus.raw() fixes a theoretical concurrent-access hazard but costs
+# a lock acquire + frequency check every ~93ms of audio, and measured on
+# hardware that was audible as stutter even after the frequency-cache
+# regression it exposed was separately fixed. The accepted hazard (see
+# assets.py's SHARED-BUS RULE note) is that no current game draws to a
+# display while a background (non-awaited) clip is still streaming from
+# SD — every game explicitly sequences draw-then-play or awaits playback
+# before its next draw. If a future game needs true background SD audio
+# concurrent with SD/display traffic, that game's own audio should live
+# in /assets/<game_id>/audio/ (Tier B, no SPI0 contention) rather than
+# reintroducing bus-locking here.
 
 import asyncio
 import struct
 import math
 import micropython
 import config
-from drivers.spi_bus import spi_bus
 
 _FLASH_AUDIO_ROOT = "/assets/audio"
 _SD_AUDIO_ROOT    = "/sd/audio"
@@ -262,21 +270,11 @@ class AudioManager:
             await self._play_synth(freq, dur, vol * self._volume)
 
     async def _play_wav(self, path: str):
-        # SD lives on the shared SPI0 bus: every file op on a /sd path must
-        # hold the bus lock at the SD-safe clock, or a concurrent display
-        # draw corrupts the transaction (and 10MHz reads EIO on this board).
-        # littlefs paths never touch SPI0, so they skip the lock entirely.
-        on_sd = path.startswith("/sd/")
-
-        async def _fio(fn, *args):
-            if on_sd:
-                async with spi_bus.raw(config.SPI_FREQ_SD_DATA):
-                    return fn(*args)
-            return fn(*args)
-
-        f = await _fio(open, path, 'rb')
+        # No spi_bus locking/frequency management here — see the module
+        # docstring's CLIP RESOLUTION note for why that trade was reverted.
+        f = open(path, 'rb')
         try:
-            header = await _fio(f.read, 44)
+            header = f.read(44)
             if header[:4] != b'RIFF' or header[8:12] != b'WAVE':
                 return
             buf = bytearray(config.AUDIO_BUF_BYTES)
@@ -284,7 +282,7 @@ class AudioManager:
             self._i2s = self._make_i2s()   # one session for the whole clip
             try:
                 while True:
-                    n = await _fio(f.readinto, buf)
+                    n = f.readinto(buf)
                     if not n:
                         break
                     if self._volume < 1.0:
