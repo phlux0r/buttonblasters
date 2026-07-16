@@ -27,13 +27,10 @@ _SD_MOUNT = "/sd"
 _IMG_ROOT = _SD_MOUNT + "/images"
 _AUD_ROOT = _SD_MOUNT + "/audio"
 
-# Confirmed-working SD data-transfer rate. NOTE: this deliberately does
-# NOT use config.SPI_FREQ_SD_DATA (10MHz) — that value is aspirational
-# for a future soldered board. On the current breadboard build, 1.32MHz
-# (the sdcard.py default) and 10MHz both throw EIO on readblocks; 400kHz
-# is the rate test_sd_card.py actually passed at. Revisit once off
-# breadboard.
-_SD_DATA_BAUD = 400_000
+# SD data-transfer rate comes from config.SPI_FREQ_SD_DATA (400kHz —
+# the rate test_sd_card.py passed at; 1.32MHz+ throws EIO on this
+# breadboard; bump the config value on the soldered board).
+_SD_DATA_BAUD = config.SPI_FREQ_SD_DATA
 
 # Other CS pins on the shared SPI0 bus. Held HIGH before SD init so no
 # display controller drives the bus during the SD handshake (bus
@@ -53,8 +50,6 @@ class AssetManager:
         self._cache       = {}
         self._cache_limit = 32_000
         self._sd_mounted  = False
-        self._icon_block  = None      # shared contiguous image-load block
-        self._icon_stride = 0
 
     def mount_sd(self) -> bool:
         if config.SD_DEFERRED:
@@ -87,16 +82,14 @@ class AssetManager:
 
             # Restore the shared bus to display speed for the displays.
             #
-            # SHARED-BUS HAZARD (known, not yet handled): SD and all five
-            # displays share SPI0 at different speeds (SD=400kHz,
-            # displays=10MHz). sdcard.py sets its speed once at init and
-            # does NOT re-assert it per read, so if a display transaction
-            # reconfigures the bus to 10MHz between two SD reads, the next
-            # SD read can fail with EIO. Harmless today (no game interleaves
-            # SD reads with display draws — Shape Match is solid-colour),
-            # but must be solved before any game streams SD assets mid-draw
-            # (e.g. My Big Day Out). Fix will be per-transaction speed
-            # re-assertion around SD reads.
+            # SHARED-BUS RULE: SD and all five displays share SPI0 at
+            # different speeds (SD=400kHz, displays=10MHz), and sdcard.py
+            # does NOT re-assert its speed per read. Every SD access after
+            # this point must therefore run inside a bracketed window —
+            # spi_bus.raw(config.SPI_FREQ_SD_DATA) or an explicit
+            # init/finally pair — as read_file(), game_cache, audio, and
+            # the kernel's score I/O all do. A bare open() on /sd runs at
+            # 10MHz and EIOs (or collides with a display transaction).
             spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)
 
             self._sd_mounted = True
@@ -124,35 +117,6 @@ class AssetManager:
                         self._index[entry] = full
         except OSError:
             pass
-
-    # ── Shared icon-load pool ────────────────────────────────────
-    # One contiguous block, allocated ONCE at boot (freshest heap). Icon games
-    # borrow memoryview slices instead of each allocating six buffers at
-    # game-load, where the heap is fragmented and six separate 28.8KB requests
-    # intermittently fail to place. Sized for the worst icon game: 6x120x120.
-    def alloc_icon_pool(self, slots=6, w=120, h=120):
-        if self._icon_block is not None:
-            return
-        import gc
-        gc.collect()
-        self._icon_stride = w * h * 2
-        self._icon_block  = bytearray(self._icon_stride * slots)
-        gc.collect()
-        print("[assets] icon pool: %d slots x %d B = %d B"
-              % (slots, self._icon_stride, len(self._icon_block)))
-
-    def borrow_icons(self, count, w, h):
-        # `count` memoryview slices of w*h*2 into the shared block. Only one
-        # game runs at a time, so sequential borrows are safe. Hard-fails.
-        need = w * h * 2
-        if self._icon_block is None:
-            self.alloc_icon_pool(count, w, h)     # lazy fallback (less fresh)
-        slots = len(self._icon_block) // need
-        if count > slots:
-            raise MemoryError("icon pool too small: need %d x %dB, holds %d"
-                              % (count, need, slots))
-        blk = memoryview(self._icon_block)
-        return [blk[i * need:(i + 1) * need] for i in range(count)]
 
     @staticmethod
     def image_size(filename: str):

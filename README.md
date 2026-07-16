@@ -44,6 +44,7 @@ buttonblasters/
 ├── main.py                  # Entry point — boots kernel
 ├── config.py                # Hardware-verified pin map & constants (edit this)
 ├── sdcard.py                # SD card block driver (FAT filesystem)
+├── rgb666_viper.py          # @micropython.viper RGB565→RGB666 band converter (31x speedup)
 │
 ├── drivers/
 │   ├── spi_bus.py           # Shared SPI0 bus, asyncio-locked, cache-aware freq switching
@@ -66,9 +67,6 @@ buttonblasters/
 │   ├── sprite_engine.py      # Sprite compositing/animation
 │   └── sprite_adapter.py     # Bridges sprite engine to display_manager
 │
-├── graphics_speed/
-│   └── rgb666_viper.py       # @micropython.viper RGB565→RGB666 band converter (31x speedup)
-│
 ├── games/
 │   ├── registry.py           # Register games here (one line each)
 │   ├── example/              # Working game template — copy to start a new game
@@ -76,6 +74,7 @@ buttonblasters/
 │
 ├── assets/                   # Bitmaps checked into the repo (menu, sys, per-game)
 ├── documents/                 # Hardware notes, narrator script, family recording guide
+├── tools/                     # deploy.py — stages & installs firmware to the Pico
 └── tests/                     # Hardware bring-up + performance test scripts (see below)
 ```
 
@@ -244,13 +243,22 @@ Confirmed via hardware bring-up tests 1–14 (see `tests/`). Full context and ra
 
 ### Install the Firmware
 
-Using [mpremote](https://docs.micropython.org/en/latest/reference/mpremote.html):
+Use the deploy script — it maps the repo layout to the device layout
+(sprites to `/assets/static/`, SD payload staged separately) and skips
+tests/docs that would waste flash:
+
 ```bash
 pip install mpremote
-mpremote connect auto cp -r buttonblasters/ :
+python3 tools/deploy.py                 # stage + install to the Pico
+python3 tools/deploy.py --mpy           # smaller: cross-compile to .mpy
+python3 tools/deploy.py --dry-run       # stage into build/ to inspect
 ```
 
-Or use **VS Code + MicroPico extension** for a GUI workflow (see IDE section below).
+Anything staged under `build/sd/` belongs on the SD card (copy with a card
+reader, or `--sd` to push through the mounted card).
+
+**VS Code + MicroPico** (see IDE section below) remains handy for the REPL
+and quick single-file iteration, but the script is the reproducible path.
 
 ### Prepare the SD Card
 

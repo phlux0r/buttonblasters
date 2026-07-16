@@ -10,7 +10,8 @@ PIN_MOSI         = 19    # ✓ verified — only valid MOSI for SPI0
 PIN_MISO         = 4     # ✓ verified
 SPI_FREQ_DISPLAY = 10_000_000
 SPI_FREQ_SD_INIT =    400_000
-SPI_FREQ_SD_DATA = 10_000_000
+SPI_FREQ_SD_DATA =    400_000   # confirmed breadboard ceiling — EIO at
+                                 # >=1.32MHz. Target 10MHz on soldered board.
 
 # ── ILI9488 main display (4.0" IPS 320×480) ─────────────────────
 PIN_CS_MAIN  = 6

@@ -20,7 +20,7 @@ from drivers import flash_assets
 import config
 
 _SAFETY_MARGIN = 8 * 1024   # leave headroom, don't run littlefs to the wire
-_SD_DATA_BAUD  = 400_000    # must match drivers/assets.py's _SD_DATA_BAUD
+_SD_DATA_BAUD  = config.SPI_FREQ_SD_DATA
 _COPY_CHUNK = 4096   # one reusable buffer for the whole install() call
 
 def _free_bytes():

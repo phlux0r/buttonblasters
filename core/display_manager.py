@@ -41,18 +41,85 @@ def rgb(r: int, g: int, b: int) -> int:
     """Convert 0-255 RGB to RGB565."""
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
+# ── Text rasteriser ──────────────────────────────────────────────
+# Text is drawn once at scale 1 with framebuf (LE RGB565), then scaled
+# into a BE RGB565 output buffer by the viper function below — both blit
+# paths (ILI9488 rgb565_to_666 and the ST7789 direct stream) read
+# big-endian, so the scaler emits BE directly. The old per-pixel Python
+# scaling loop was slow AND allocated a fresh buffer every call (the
+# same heap-churn class the sprite arena exists to prevent); these two
+# module-level scratch buffers are allocated once and grow only if a
+# larger string ever appears.
+
+_TXT_BASE = bytearray(0)   # scale-1 LE framebuf backing
+_TXT_OUT  = bytearray(0)   # scaled BE output
+
+
+def _txt_buffers(base_bytes, out_bytes):
+    global _TXT_BASE, _TXT_OUT
+    if len(_TXT_BASE) < base_bytes or len(_TXT_OUT) < out_bytes:
+        import gc
+        gc.collect()
+        if len(_TXT_BASE) < base_bytes:
+            _TXT_BASE = bytearray(base_bytes)
+        if len(_TXT_OUT) < out_bytes:
+            _TXT_OUT = bytearray(out_bytes)
+    return _TXT_BASE, _TXT_OUT
+
+
 @micropython.viper
-def _fb_le_to_be(buf: ptr8, n_bytes: int):
-    # framebuf.RGB565 is little-endian on RP2350; both blit paths (the ILI9488
-    # rgb565_to_666 viper and the ST7789 direct stream) read big-endian, so
-    # swap the byte pairs before blitting or colours come out byte-swapped
-    # (0xEA16 pink -> green). Baked assets are already BE, so they never hit this.
+def _scale_text_be(src: ptr16, sw: int, sh: int,
+                   dst: ptr8, dw: int, s: int, bold: int, bg: int):
+    # Nearest-neighbour scale of LE RGB565 src into BE bytes in dst.
+    # bold=1 smears each glyph pixel one extra output column right
+    # (same look as the old double-draw). dst width dw = sw*s + bold.
+    n = dw * sh * s
+    hi_bg = (bg >> 8) & 0xFF
+    lo_bg = bg & 0xFF
     i = 0
-    while i < n_bytes:
-        t = buf[i]
-        buf[i] = buf[i + 1]
-        buf[i + 1] = t
-        i += 2
+    while i < n:
+        dst[2 * i]     = hi_bg
+        dst[2 * i + 1] = lo_bg
+        i += 1
+    y = 0
+    while y < sh:
+        row = y * sw
+        x = 0
+        while x < sw:
+            px = int(src[row + x])
+            if px != bg:
+                hi = (px >> 8) & 0xFF
+                lo = px & 0xFF
+                bw = s + bold
+                if x * s + bw > dw:
+                    bw = dw - x * s
+                oy = 0
+                while oy < s:
+                    o = ((y * s + oy) * dw + x * s) * 2
+                    ox = 0
+                    while ox < bw:
+                        dst[o]     = hi
+                        dst[o + 1] = lo
+                        o += 2
+                        ox += 1
+                    oy += 1
+            x += 1
+        y += 1
+
+
+def _render_text_be(text, color, bg, scale, bold):
+    """Rasterise `text` and return (BE memoryview, width, height)."""
+    sw = len(text) * 8
+    sh = 8
+    b  = 1 if bold else 0
+    dw = sw * scale + b
+    dh = sh * scale
+    base, out = _txt_buffers(sw * sh * 2, dw * dh * 2)
+    fb = framebuf.FrameBuffer(base, sw, sh, framebuf.RGB565)
+    fb.fill(bg)
+    fb.text(text, 0, 0, color)
+    _scale_text_be(base, sw, sh, out, dw, scale, b, bg)
+    return memoryview(out)[:dw * dh * 2], dw, dh
 
 class DisplayManager:
 
@@ -164,49 +231,17 @@ class DisplayManager:
 
     async def text_main(self, text: str, x: int, y: int,
                         color=WHITE, bg=BLACK, scale=2, bold=False):
-        char_w = 8 * scale
-        char_h = 8 * scale
-        bw     = len(text) * char_w + (1 if bold else 0)
-        fb_buf = bytearray(bw * char_h * 2)
-        fb     = framebuf.FrameBuffer(fb_buf, bw, char_h, framebuf.RGB565)
-        fb.fill(bg)
-        for ci, ch in enumerate(text):
-            tx = ci * char_w
-            if scale == 1:
-                fb.text(ch, tx, 0, color)
-                if bold:
-                    fb.text(ch, tx + 1, 0, color)
-            else:
-                tmp = bytearray(8 * 8 * 2)
-                tfb = framebuf.FrameBuffer(tmp, 8, 8, framebuf.RGB565)
-                tfb.fill(bg)
-                tfb.text(ch, 0, 0, color)
-                for row in range(8):
-                    for col in range(8):
-                        px = tfb.pixel(col, row)
-                        if px == bg:
-                            continue
-                        for sr in range(scale):
-                            for sc in range(scale):
-                                fb.pixel(tx + col*scale + sc, row*scale + sr, px)
-                                if bold:
-                                    fb.pixel(tx + col*scale + sc + 1,
-                                             row*scale + sr, px)
-        _fb_le_to_be(fb_buf, len(fb_buf))
-        await self.main.blit_rgb565(memoryview(fb_buf), x, y, bw, char_h)
+        if not text:
+            return
+        mv, w, h = _render_text_be(text, color, bg, scale, bold)
+        await self.main.blit_rgb565(mv, x, y, w, h)
 
     async def text_btn(self, idx: int, text: str, x: int, y: int,
                        color=WHITE, bg=BLACK, scale=1):
-        char_w = 8 * scale
-        char_h = 8 * scale
-        bw     = len(text) * char_w
-        fb_buf = bytearray(bw * char_h * 2)
-        fb     = framebuf.FrameBuffer(fb_buf, bw, char_h, framebuf.RGB565)
-        fb.fill(bg)
-        for ci, ch in enumerate(text):
-            fb.text(ch, ci * char_w, 0, color)
-        _fb_le_to_be(fb_buf, len(fb_buf))
-        await self.btns[idx].blit_rgb565(memoryview(fb_buf), x, y, bw, char_h)
+        if not text:
+            return
+        mv, w, h = _render_text_be(text, color, bg, scale, False)
+        await self.btns[idx].blit_rgb565(mv, x, y, w, h)
 
     # ── Menu nav indicators ──────────────────────────────────────
 

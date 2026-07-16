@@ -62,7 +62,6 @@ class Menu:
         if not await display.paint_btn_bg(3, BTN_NEXT_PATH):
             await display.show_next_indicator()
         await self._render_full()
-        await self._render_full()
 
         while True:
             action, data = await buttons.get_menu_event()
@@ -114,11 +113,9 @@ class Menu:
         await self._render_main_card()
         await self._render_btn_screens()
 
-    # ── REPLACEMENT for Menu._render_main_card() in core/menu.py ─────────
-    # Landscape 480×320 layout. Uses the wider canvas (bigger title) and
-    # distributes elements across the shorter height. Only this one method
-    # changes; _render_btn_screens() and everything else in menu.py stay
-    # as-is (the button ST7789s are not affected by main-display rotation).
+    # Procedural fallback card (landscape 480×320) — used when a game has
+    # no baked menu card asset. Draws title/description/stars/hint from the
+    # game class attributes on a flat colour.
 
     async def _render_main_card_procedural(self, game_cls):
         bg     = _CARD_COLORS[self._idx % len(_CARD_COLORS)]

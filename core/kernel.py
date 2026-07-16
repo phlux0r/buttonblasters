@@ -16,7 +16,7 @@ import asyncio
 import json
 import time
 
-from core.display_manager import display, rgb, BLACK
+from core.display_manager import display, rgb
 from core.menu import Menu
 from core.game_base import GameResult
 from core import game_cache
@@ -27,6 +27,7 @@ from drivers.audio import audio
 from drivers.leds import leds
 from drivers.haptic import haptic
 from drivers.assets import assets
+from drivers.spi_bus import spi_bus
 from drivers import flash_assets
 import config
 
@@ -103,7 +104,7 @@ class AppKernel:
         sd_ok = assets.mount_sd()
         if sd_ok:
             assets.build_index()
-            self._load_scores()
+            await self._load_scores()
         else:
             if not await display.paint_main_bg(_NOSD_BG):
                 await display.show_no_sd_warning()
@@ -120,13 +121,6 @@ class AppKernel:
             gid: d.get("stars", 0) for gid, d in self._scores.items()}
 
         print(f"[kernel] boot complete — {len(REGISTRY)} games registered")
-
-    # Two edits inside AppKernel.run(). These fix:
-    #   #2  LEDs staying on (rainbow) at game end
-    #   #3  BACK/HOME doing nothing on game end (2.5s blocking splash removed)
-    #
-    # The game (Shape Match) now owns its own end screen with a button-wait,
-    # so the kernel no longer needs the blocking _game_complete_sequence.
 
     async def run(self):
         asyncio.create_task(buttons.run())
@@ -147,12 +141,11 @@ class AppKernel:
             print(f"[kernel] loading {game.GAME_ID}")
             if leds.ready:
                 leds.start_effect(leds.chase(100, 200, 100))
-            await game_cache.install(game.GAME_ID)      # NEW — Tier B install
+            await game_cache.install(game.GAME_ID)      # Tier B — SD → littlefs
+            audio.set_game(game.GAME_ID)                # game's Tier B audio dir
             await game.load()
-            leds.stop_effect()          # FIX: was leds.off() — off() left the
-                                        # chase effect task running, which kept
-                                        # rewriting the strip. stop_effect()
-                                        # cancels the task AND clears the strip.
+            leds.stop_effect()          # not off() — off() clears pixels but
+                                        # leaves the effect task rewriting them
 
             print(f"[kernel] running {game.GAME_ID}")
             try:
@@ -162,64 +155,26 @@ class AppKernel:
                 result = GameResult(score=0, completed=False)
 
             self._touch()
-            self._save_result(game.GAME_ID, result)
+            await self._save_result(game.GAME_ID, result)
             self._menu.update_result(game.GAME_ID,
                                      result.score, result.stars)
 
-            # FIX #2/#3: stop any lingering LED effect and turn the strip
-            # off at game end. The game already showed its own end screen
-            # and handled BACK/HOME, so we DON'T run the old blocking
-            # _game_complete_sequence (that 2.5s splash swallowed BACK).
+            # The game owns its own end screen, BACK handling, and the
+            # end-of-round cheer (BaseGame.announce_round_complete()) —
+            # the kernel just cleans up and returns to the carousel.
             leds.stop_effect()
 
-            # The end-of-round cheer (well_done.wav / new_high_score.wav) is
-            # played by the game itself, from its own end screen, via
-            # BaseGame.announce_round_complete() — right when a round-set
-            # finishes, not here at carousel-exit time.
-
             await game.unload()
-            game_cache.evict(game.GAME_ID)        # NEW — Tier B evict
+            audio.set_game(None)
+            game_cache.evict(game.GAME_ID)        # Tier B evict
             print(f"[kernel] unloaded {game.GAME_ID}")
 
-    # NOTE: _game_complete_sequence() can stay defined in the file (unused
-    # now) or be deleted — your choice. Nothing calls it after this change.
-    # The menu's idle_rainbow still runs while in the menu (by design); if
-    # you want the strip fully dark in the menu too, tell me and I'll adjust
-    # menu.run().
-
-    # ── core/kernel.py — game_start transition tear fix ─────────────────
-    # Replace AppKernel._transition_to_game() with this version.
-    #
-    # BEFORE: played game_start.wav, THEN drew the "GET READY!" splash — the
-    # full-screen splash fill ran while the sound played, tearing the main
-    # screen (same overlap class as the wrong.wav bug in game.py).
-    #
-    # AFTER: draw the splash FIRST (silent), THEN play the sound — so no
-    # display SPI write overlaps audio playback. The LED flash is a
-    # non-blocking effect (no SPI contention), so it's fine to start first.
-
     async def _transition_to_game(self, game):
-        # Each game now owns its own intro (e.g. Match It!'s category card), so
-        # the kernel no longer draws a generic GET READY splash or plays
-        # game_start.wav here — that removes a duplicated cue and a redundant
-        # transition. The LED flash stays: non-blocking, no SPI contention.
+        # Each game owns its own intro (e.g. Match It!'s category card) — no
+        # generic GET READY splash or game_start.wav here. The LED flash is a
+        # non-blocking effect with no SPI contention, so it's safe to start.
         if leds.ready:
             leds.start_effect(leds.flash(80, 80, 255, count=2))
-
-
-    async def _game_complete_sequence(self, result: GameResult):
-        if leds.ready:
-            leds.start_effect(leds.level_up())
-        if haptic.ready:
-            asyncio.create_task(haptic.triple_pulse())
-        stars_str = ("*" * result.stars) + ("-" * (3 - result.stars))
-        await display.show_splash(f"SCORE {result.score}",
-                                  stars_str, rgb(20, 60, 20))
-        if result.high_score:
-            await audio.play_voice("new_high_score.wav")
-        else:
-            await audio.play_voice("well_done.wav")
-        await asyncio.sleep_ms(2500)
 
     async def _idle_watchdog(self):
         while True:
@@ -241,24 +196,38 @@ class AppKernel:
                 leds.set_brightness(config.LED_BRIGHTNESS)
             self._dimmed = False
 
-    def _load_scores(self):
+    # scores.json lives on the SD card, which shares SPI0 with the displays.
+    # Every read/write must run inside spi_bus.raw() at the SD-safe clock —
+    # a bare open() runs at whatever speed the bus was left at (usually the
+    # display's 10MHz, which EIOs on this board) and can collide with a
+    # concurrent display transaction. JSON encode/decode happens OUTSIDE the
+    # locked window so the bus is held only for the actual transfer.
+
+    async def _load_scores(self):
         try:
-            with open(_SCORES_PATH, "r") as f:
-                self._scores = json.load(f)
+            async with spi_bus.raw(config.SPI_FREQ_SD_DATA):
+                with open(_SCORES_PATH, "r") as f:
+                    data = f.read()
+            self._scores = json.loads(data)
             print(f"[kernel] loaded scores for {len(self._scores)} games")
         except OSError:
             self._scores = {}
+        except ValueError:
+            print("[kernel] scores.json corrupt — starting fresh")
+            self._scores = {}
 
-    def _save_scores(self):
+    async def _save_scores(self):
         if not assets.sd_available:
             return
+        data = json.dumps(self._scores)
         try:
-            with open(_SCORES_PATH, "w") as f:
-                json.dump(self._scores, f)
+            async with spi_bus.raw(config.SPI_FREQ_SD_DATA):
+                with open(_SCORES_PATH, "w") as f:
+                    f.write(data)
         except OSError as e:
             print("[kernel] score save failed:", e)
 
-    def _save_result(self, game_id: str, result: GameResult):
+    async def _save_result(self, game_id: str, result: GameResult):
         entry   = self._scores.get(game_id, {"score": 0, "stars": 0})
         changed = False
         if result.score > entry.get("score", 0):
@@ -270,4 +239,4 @@ class AppKernel:
             changed        = True
         self._scores[game_id] = entry
         if changed:
-            self._save_scores()
+            await self._save_scores()

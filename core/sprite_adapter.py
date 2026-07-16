@@ -35,8 +35,6 @@ Usage in a game:
 """
 
 from drivers.strip_renderer import RGB565_STRIP, DISPLAY_FREQ
-# NOTE: when strip_renderer moves into the drivers/ package, change to:
-#   from drivers.strip_renderer import RGB565_STRIP, DISPLAY_FREQ
 
 
 def _freq_noop(hz):

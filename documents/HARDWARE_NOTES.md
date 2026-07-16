@@ -184,6 +184,28 @@ Additional targeted probes (not full bring-up tests, used to diagnose the gotcha
 
 ---
 
+## Soldered-Board Follow-Ups (performance headroom, bench-gated)
+
+Deliberately not attempted on the breadboard — each needs a bench pass on
+the soldered board before trusting it:
+
+- **Display SPI at 20MHz.** The ILI9488 write clock is rated to 20MHz;
+  10MHz is the confirmed breadboard ceiling. Doubling it halves the
+  ~552ms full-frame cost on the main display and ~177ms on the ST7789s.
+  Re-run `tests/test_fill_speed.py` and the touch crosshair after changing
+  `SPI_FREQ_DISPLAY`.
+- **SD data rate.** `SPI_FREQ_SD_DATA` is 400kHz because the breadboard
+  EIOs at ≥1.32MHz. On a soldered board, retest at 10MHz — that makes
+  direct SD audio streaming viable (4KB chunk in ~3ms instead of ~82ms)
+  and menu-card streaming from SD plausible.
+- **DMA pixel transmit.** `drivers/strip_renderer.py` has the transmit
+  seam (`_start_transmit`/`_wait_transmit`) designed so an rp2.DMA channel
+  into the PL022 TX FIFO can replace the blocking write without touching
+  window setup, CS framing, or the converter. The RP2350/v1.28 DMA↔PL022
+  wiring is unverified — bench-confirm before trusting it.
+
+---
+
 ## Status Snapshot
 
 Confirmed done:

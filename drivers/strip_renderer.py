@@ -14,7 +14,7 @@
 #   446KB MicroPython heap; ~352KB free / 187KB largest-contiguous; 47% frag.
 #   STRIP_H=32 + SD double-buffer (150KB) seats with 202KB to spare. Verified.
 #
-# DESIGN (confirmed with Robert)
+# DESIGN
 #   * StripRenderer is always alive but holds NO big buffers at rest.
 #   * StripBufferPool is a scoped RAII resource: gc.collect() then allocate
 #     hardest-first (2x 45KB RGB666, then 2x 30KB RGB565), HARD-FAIL with a

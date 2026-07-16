@@ -12,15 +12,31 @@
 # silently swallowed by the scheduler — an earlier version lost ALL audio
 # because a task exception vanished with no traceback and no sound.
 #
-# Audio files on SD: 16-bit signed PCM WAV, mono, 22050Hz
+# Audio files: 16-bit signed PCM WAV, mono, 22050Hz
 # Convert: ffmpeg -i input.mp3 -ar 22050 -ac 1 -acodec pcm_s16le out.wav
+#
+# CLIP RESOLUTION ORDER (first hit wins):
+#   1. /assets/<game_id>/audio/<kind>/   Tier B — installed from SD by
+#      game_cache at game load (littlefs; no SPI0 traffic to play)
+#   2. /assets/audio/<kind>/             littlefs, deployed shared clips
+#   3. /sd/audio/<kind>/                 SD directly — bus-locked at 400kHz
+#   4. _SYNTH_MAP tone                   fallback when no file exists
+#
+# SD streaming is a LAST RESORT on this breadboard: a 4KB chunk takes
+# ~82ms to read at 400kHz but holds only ~93ms of audio, so playback
+# barely keeps up and monopolises the shared bus. Put per-game clips
+# under /sd/assets/<game_id>/audio/ so game_cache installs them to
+# flash, or deploy shared clips to /assets/audio/.
 
 import asyncio
 import struct
 import math
+import micropython
 import config
+from drivers.spi_bus import spi_bus
 
-_SD_DATA_BAUD = 400_000   # keep in sync with drivers/assets.py / game_cache.py
+_FLASH_AUDIO_ROOT = "/assets/audio"
+_SD_AUDIO_ROOT    = "/sd/audio"
 
 _SYNTH_MAP = {
     "correct.wav":       (659, 150, 0.4),
@@ -39,6 +55,22 @@ _SYNTH_MAP = {
     "well_done.wav":     (659, 250, 0.4),
     "new_high_score.wav":(880, 300, 0.5),
 }
+
+
+@micropython.viper
+def _scale_volume(buf: ptr8, n_bytes: int, vol_q8: int):
+    # In-place volume scale of 16-bit LE samples, vol_q8 = volume * 256.
+    # Native code — the per-sample struct.unpack/pack loop this replaces
+    # took longer than the audio it processed and starved the I2S buffer.
+    i = 0
+    while i < n_bytes:
+        s = int(buf[i]) | (int(buf[i + 1]) << 8)
+        if s & 0x8000:
+            s -= 0x10000
+        s = (s * vol_q8) >> 8
+        buf[i]     = s & 0xFF
+        buf[i + 1] = (s >> 8) & 0xFF
+        i += 2
 
 
 def _synth_tone(freq, duration_ms, volume=0.4, sample_rate=22050):
@@ -60,6 +92,7 @@ class AudioManager:
         self._sfx_task   = None
         self._volume     = 1.0
         self._drain_evt  = None      # Event the IRQ sets (per-playback owner)
+        self._game_root  = None      # /assets/<game_id>/audio while a game runs
         self._init_hardware()
 
     def _init_hardware(self):
@@ -109,13 +142,27 @@ class AudioManager:
 
     # ── Public API ───────────────────────────────────────────────
 
+    def set_game(self, game_id):
+        """Point clip resolution at a game's Tier B audio dir (installed to
+        littlefs by game_cache). Kernel calls this at game load; pass None
+        at unload to fall back to shared clips only."""
+        self._game_root = ("/assets/%s/audio" % game_id) if game_id else None
+
+    def _candidates(self, kind, filename):
+        paths = []
+        if self._game_root:
+            paths.append(self._game_root + "/" + kind + "/" + filename)
+        paths.append(_FLASH_AUDIO_ROOT + "/" + kind + "/" + filename)
+        paths.append(_SD_AUDIO_ROOT + "/" + kind + "/" + filename)
+        return paths
+
     async def play_voice(self, filename: str, wait: bool = False):
         if not self._ready:
             return
         self._cancel(self._voice_task)
-        path = "/sd/audio/voice/" + filename
         self._voice_task = asyncio.create_task(
-            self._guard(self._play_file_or_synth(path, filename)))
+            self._guard(self._play_file_or_synth(
+                self._candidates("voice", filename), filename)))
         if wait:
             try:
                 await self._voice_task
@@ -126,9 +173,9 @@ class AudioManager:
         if not self._ready:
             return
         self._cancel(self._sfx_task)
-        path = "/sd/audio/sfx/" + filename
         self._sfx_task = asyncio.create_task(
-            self._guard(self._play_file_or_synth(path, filename)))
+            self._guard(self._play_file_or_synth(
+                self._candidates("sfx", filename), filename)))
         if wait:
             try:
                 await self._sfx_task
@@ -200,40 +247,54 @@ class AudioManager:
             if self._drain_evt is evt:
                 self._drain_evt = None
 
-    async def _play_file_or_synth(self, path: str, filename: str):
-        try:
-            await self._play_wav(path)
-        except asyncio.CancelledError:
-            raise
-        except OSError:
-            basename = filename.split("/")[-1]
-            if basename in _SYNTH_MAP:
-                freq, dur, vol = _SYNTH_MAP[basename]
-                await self._play_synth(freq, dur, vol * self._volume)
+    async def _play_file_or_synth(self, paths, filename: str):
+        for path in paths:
+            try:
+                await self._play_wav(path)
+                return
+            except asyncio.CancelledError:
+                raise
+            except OSError:
+                continue      # not at this root — try the next
+        basename = filename.split("/")[-1]
+        if basename in _SYNTH_MAP:
+            freq, dur, vol = _SYNTH_MAP[basename]
+            await self._play_synth(freq, dur, vol * self._volume)
 
     async def _play_wav(self, path: str):
-        f = open(path, 'rb')
-        header = f.read(44)
-        if header[:4] != b'RIFF' or header[8:12] != b'WAVE':
-            f.close()
-            return
-        buf = bytearray(config.AUDIO_BUF_BYTES)
-        mv  = memoryview(buf)
-        self._i2s = self._make_i2s()   # one session for the whole clip
+        # SD lives on the shared SPI0 bus: every file op on a /sd path must
+        # hold the bus lock at the SD-safe clock, or a concurrent display
+        # draw corrupts the transaction (and 10MHz reads EIO on this board).
+        # littlefs paths never touch SPI0, so they skip the lock entirely.
+        on_sd = path.startswith("/sd/")
+
+        async def _fio(fn, *args):
+            if on_sd:
+                async with spi_bus.raw(config.SPI_FREQ_SD_DATA):
+                    return fn(*args)
+            return fn(*args)
+
+        f = await _fio(open, path, 'rb')
         try:
-            while True:
-                n = f.readinto(buf)
-                if n == 0:
-                    break
-                if self._volume < 1.0:
-                    for i in range(0, n, 2):
-                        s = struct.unpack_from('<h', buf, i)[0]
-                        struct.pack_into('<h', buf, i, int(s * self._volume))
-                await self._stream(mv, n)
+            header = await _fio(f.read, 44)
+            if header[:4] != b'RIFF' or header[8:12] != b'WAVE':
+                return
+            buf = bytearray(config.AUDIO_BUF_BYTES)
+            mv  = memoryview(buf)
+            self._i2s = self._make_i2s()   # one session for the whole clip
+            try:
+                while True:
+                    n = await _fio(f.readinto, buf)
+                    if not n:
+                        break
+                    if self._volume < 1.0:
+                        _scale_volume(mv, n, int(self._volume * 256))
+                    await self._stream(mv, n)
+            finally:
+                self._i2s.deinit()
+                self._i2s = None
         finally:
             f.close()
-            self._i2s.deinit()
-            self._i2s = None
 
     async def _play_synth(self, freq: int, duration_ms: int, volume: float = 0.4):
         buf = _synth_tone(freq, duration_ms,
