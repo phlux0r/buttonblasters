@@ -2,7 +2,7 @@
 # Confirmed-working display drivers.
 #
 # ILI9488  4.0" IPS 320×480  — main screen
-# ST7789   1.69" 240×300     — ×4 button screens
+# ST7789   1.69" 300×240 landscape — ×4 button screens
 #
 # Every init value is hardware-confirmed. Do not simplify.
 #
@@ -181,7 +181,9 @@ def _ensure_blk():
 class ST7789:
     """
     ST7789 1.69" button display driver.
-    Critical: full LovyanGFX init, BLK=GP13 HIGH, 240×300 window.
+    Critical: full LovyanGFX init, BLK=GP13 HIGH, 300×240 landscape window
+    (MADCTL=0x60, config.ST7789_MADCTL — bench-confirmed via
+    tests/test_15_button_landscape.py; was 240×300 portrait, MADCTL=0x00).
     """
 
     def __init__(self, index: int):
@@ -210,7 +212,7 @@ class ST7789:
         self._wc(0x01); time.sleep_ms(150)
         self._wc(0x11); time.sleep_ms(255)
         self._wc(0x3A); self._wd(0x05)
-        self._wc(0x36); self._wd(0x00)
+        self._wc(0x36); self._wd(config.ST7789_MADCTL)   # landscape
         self._wc(0xB2); self._wd(0x0C,0x0C,0x00,0x33,0x33)
         self._wc(0xB7); self._wd(0x35)
         self._wc(0xBB); self._wd(0x19)

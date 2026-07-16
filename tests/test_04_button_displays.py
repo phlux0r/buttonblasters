@@ -1,6 +1,12 @@
 # tests/test_04_working.py — Button Blasters
 # TEST 4 WORKING: ST7789 1.69" confirmed working
 #
+# HISTORICAL: this confirmed the original PORTRAIT window (240x300,
+# MADCTL=0x00). The shell moved to a 2x2 button layout, so the live
+# firmware now runs these panels LANDSCAPE (300x240, MADCTL=0x60) — see
+# tests/test_15_button_landscape.py and HARDWARE_NOTES.md. Left as-is
+# below as the record of that original bring-up milestone.
+#
 # CONFIRMED hardware facts:
 #   DC=GP2  (GP5 dead on this board — never use GP5)
 #   CS=GP7  SCK=GP18  MOSI=GP19  RES=GP15  BLK=GP13 (GPIO HIGH)

@@ -81,8 +81,8 @@ _FALLBACK = (RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA)
 
 # ── Background board ─────────────────────────────────────────────
 BOARD_PATH   = "/assets/match/bgm_match_480x320.bz"  # BE, kind 1 (bgm_)
-REPLAY_TILE_PATH = "/assets/menu/btn_menu-match_240x300.bz"  # reused, 0 extra KB
-BACK_TILE_PATH   = "/assets/menu/btn_back_240x300.bz"          # new, shared across games
+REPLAY_TILE_PATH = "/assets/menu/btn_menu-match_300x240.bz"  # reused, 0 extra KB
+BACK_TILE_PATH   = "/assets/menu/btn_back_300x240.bz"          # shared across games
 HEADER_COLOR = 0xEA16      # #EB42B5 hot pink, quantized to RGB565
 HEADER_H     = 44          # pink flat zone the prompt+score live in: (0,0,480,44)
 PROMPT_Y     = 24          # prompt y inside the header (score sits at y=4)
@@ -378,7 +378,7 @@ class ShapeMatchGame(BaseGame):
                 return "again"
 
     async def _show_back_fallback(self, idx):
-        # Procedural stand-in until btn_back_240x300.bz is baked & uploaded.
+        # Procedural stand-in until btn_back_300x240.bz is baked & uploaded.
         bg = rgb(60, 15, 15)
         await self.display.fill_btn(idx, bg)
         await self.display.draw_btn_border(idx, rgb(200, 60, 60))

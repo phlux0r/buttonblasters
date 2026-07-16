@@ -80,19 +80,20 @@ cs=1                            # raised once, at the very end
 
 - `BLK` (backlight) must be driven **HIGH from GPIO** (GP13) — tying it to 3.3V does not work on this module.
 - Requires the full LovyanGFX-derived power-up init; a minimal 6-command init does not activate the frame buffer.
-- Working window is **240×300**, not the datasheet's 240×280 — 300 rows fills the full physical screen.
+- Native working window is **240×300** (portrait), not the datasheet's 240×280 — 300 rows fills the full physical screen. **Landscape (current, for the 2×2 shell layout): 300×240, `MADCTL=0x60`** — bench-confirmed via `tests/test_15_button_landscape.py` on physical position 2 (CS=GP9, DC=GP14); the window stayed a clean 300×240 with no dead/garbage strip, same total pixel budget as portrait just rotated. RGB colour order was already correct at MADCTL bit3=0 in portrait — the landscape value keeps that bit (`0x60`, not `0x68`), don't add BGR when experimenting further. **Not yet re-confirmed on the other 3 physical positions** — same part number so it should hold, but the 240→300 portrait surprise came from bench-testing, not the datasheet, so don't assume it's universal without checking.
 - GP5 is dead on this board, so DC for BTN-0 uses GP2 instead of the "expected" pin.
 - SPI at 10 MHz confirmed stable. No MISO connection needed — displays are write-only.
 - Same RAMWR/CS rule as the ILI9488: CS stays low from the `0x2C` command through all pixel data, rising once at the end. ST7789 doesn't need per-byte CS framing on command bytes, but the RAMWR→pixel transition must hold CS low or fills produce noise.
-- Fill speed: ~177 ms per full frame (RGB565 native — faster than the main display's RGB666).
+- Fill speed: ~177 ms per full frame in portrait (RGB565 native — faster than the main display's RGB666); not yet re-measured in landscape (same pixel count, should be ~equal).
+- **Switching orientation invalidates every full-screen button asset baked at the old dimensions** — the 96×96 icon sprites (Match's `sprb_*`, Bonk's `spr_*`/`sprb_*`) are unaffected since they're centered by a formula that recomputes from `config.BTN_W`/`BTN_H`, but anything baked at the whole button canvas (menu tiles, prev/next/back tiles) needs re-baking at 300×240 and its filename updated accordingly (`_240x300.bz` → `_300x240.bz`).
 
-Working init sequence:
+Working init sequence (current, landscape):
 
 ```python
 wc(0x01); time.sleep_ms(150)    # SW reset
 wc(0x11); time.sleep_ms(255)    # sleep out
 wc(0x3A); wd(0x05)              # RGB565
-wc(0x36); wd(0x00)              # MADCTL
+wc(0x36); wd(0x60)              # MADCTL — landscape (was 0x00 portrait)
 wc(0xB2); wd(0x0C,0x0C,0x00,0x33,0x33)
 wc(0xB7); wd(0x35)
 wc(0xBB); wd(0x19)
@@ -180,7 +181,7 @@ Confirmed working configuration:
 | Sprite engine | `tests/test_14_sprite_engine.py` | ✓ Passed |
 | SD card | `tests/test_sd_card.py` | ✓ Passed |
 
-Additional targeted probes (not full bring-up tests, used to diagnose the gotchas above): `test_audio_trace.py`, `test_button_latency.py`, `test_fill_speed.py`, `test_i2s_yield.py`, `test_rgb666_viper.py`, `test_sd_probe.py`, `test_touch_crosshair.py`.
+Additional targeted probes (not full bring-up tests, used to diagnose the gotchas above): `test_audio_trace.py`, `test_button_latency.py`, `test_fill_speed.py`, `test_i2s_yield.py`, `test_rgb666_viper.py`, `test_sd_probe.py`, `test_touch_crosshair.py`, `test_15_button_landscape.py` (orientation probe — confirmed `MADCTL=0x60`, 300×240 on physical position 2 only so far).
 
 ---
 

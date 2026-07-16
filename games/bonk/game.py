@@ -101,9 +101,9 @@ LEGEND_BG    = DARK                 # idle colour for an unpopulated button
 FALLBACK_BOARD_COLOR = rgb(30, 70, 40)   # flat meadow, used if the real
                                           # board asset is missing/invalid
 
-REPLAY_TILE_PATH = "/assets/menu/btn_menu-bonk_240x300.bz"   # own menu tile,
+REPLAY_TILE_PATH = "/assets/menu/btn_menu-bonk_300x240.bz"   # own menu tile,
                                                               # reused, 0 extra KB
-BACK_TILE_PATH   = "/assets/menu/btn_back_240x300.bz"        # shared across games
+BACK_TILE_PATH   = "/assets/menu/btn_back_300x240.bz"        # shared across games
 
 
 def _main_asset_path(name):

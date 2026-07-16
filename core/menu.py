@@ -35,9 +35,9 @@ _CARD_COLORS = [
 ]
 
 _MENU_CARD = "/assets/menu/bgm_menu-%s_480x320.bz"   # % GAME_ID
-_MENU_TILE = "/assets/menu/btn_menu-%s_240x300.bz"   # % GAME_ID
-BTN_PREV_PATH = "/assets/menu/btn_prev_240x300.bz"
-BTN_NEXT_PATH = "/assets/menu/btn_next_240x300.bz"
+_MENU_TILE = "/assets/menu/btn_menu-%s_300x240.bz"   # % GAME_ID — landscape
+BTN_PREV_PATH = "/assets/menu/btn_prev_300x240.bz"
+BTN_NEXT_PATH = "/assets/menu/btn_next_300x240.bz"
 
 class Menu:
 

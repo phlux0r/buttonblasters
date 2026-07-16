@@ -24,7 +24,7 @@ The project is fully open-source: firmware, hardware design notes, and 3D print 
 |---|---|
 | MCU | Raspberry Pi Pico 2 W (RP2350, 4 MB flash) |
 | Main display | ILI9488 4.0" IPS 480×320, FT6236 capacitive touch, 18-bit RGB666 |
-| Button LCDs | 4× ST7789 1.69" 240×300 (effective), RGB565 |
+| Button LCDs | 4× ST7789 1.69" 300×240 landscape (effective), RGB565 |
 | Storage | microSD card via separate SPI breakout (bitmaps + audio) |
 | Audio | MAX98357A I2S DAC + amp → 40mm 3W 4Ω speaker |
 | LEDs | WS2812B strip (8 LEDs, shell edge) via 74AHCT125 level shifter |
