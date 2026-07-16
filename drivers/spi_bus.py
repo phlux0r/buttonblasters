@@ -21,12 +21,34 @@ class SpiBus:
         self._current_freq = config.SPI_FREQ_DISPLAY
 
     def _set_freq(self, freq):
-        # ALWAYS re-init — never trust a cached frequency. Several callers
-        # (SD mount, open_background's SD fallback) call spi.init() directly
-        # and desync any cache, and a skipped re-init strands the bus at the
-        # wrong speed (SD EIO / 44-second fills — see HARDWARE_NOTES.md).
-        self.spi.init(baudrate=freq)
-        self._current_freq = freq
+        # Skip the re-init when the cache already matches — re-init is a
+        # real hardware reconfigure, and paying it on every SPI transaction
+        # (e.g. every ~4KB audio chunk, ~10x/sec) is audible as stutter.
+        # This is only safe because EVERY direct spi.init() call in the
+        # codebase now goes through set_freq() below instead of touching
+        # self.spi directly — that was the actual desync bug (not caching
+        # itself): a caller changing the real clock without telling this
+        # cache. If you add a new direct spi.init() call anywhere, this
+        # cache goes stale again — route it through set_freq() instead.
+        if freq != self._current_freq:
+            self.spi.init(baudrate=freq)
+            self._current_freq = freq
+
+    def set_freq(self, freq):
+        """Public, cache-aware equivalent of spi.init(baudrate=freq) for
+        callers that manage their own CS/locking (e.g. sdcard.py's block
+        driver) and just need the shared bus at a given speed."""
+        self._set_freq(freq)
+
+    def invalidate(self):
+        """Call after something OUTSIDE this module's control may have
+        reconfigured the physical SPI0 clock without going through
+        set_freq() — the one known case is SD mount, which constructs its
+        own machine.SPI(config.SPI_ID, ...) instance and SDCard.init_spi()
+        calls .init() on THAT object. Same physical peripheral, invisible
+        to this cache. Forces the next set_freq() call to really reinit
+        instead of trusting a cache that can no longer be trusted."""
+        self._current_freq = None
 
     def device(self, cs_pin: Pin, freq: int = None):
         return _DeviceContext(self, cs_pin,

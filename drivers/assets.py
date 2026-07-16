@@ -87,10 +87,19 @@ class AssetManager:
             # does NOT re-assert its speed per read. Every SD access after
             # this point must therefore run inside a bracketed window —
             # spi_bus.raw(config.SPI_FREQ_SD_DATA) or an explicit
-            # init/finally pair — as read_file(), game_cache, audio, and
-            # the kernel's score I/O all do. A bare open() on /sd runs at
-            # 10MHz and EIOs (or collides with a display transaction).
-            spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)
+            # set_freq()/finally pair — as read_file(), game_cache, audio,
+            # and the kernel's score I/O all do. A bare open() on /sd runs
+            # at 10MHz and EIOs (or collides with a display transaction).
+            #
+            # sd_spi above is a SEPARATE machine.SPI(SPI_ID, ...) instance
+            # from spi_bus.spi — same physical peripheral, but SDCard's
+            # own init_spi() call on it just changed the real clock to
+            # 400kHz without spi_bus's cache knowing. invalidate() before
+            # the restore so set_freq() below doesn't wrongly skip the
+            # reinit because the (stale) cache happens to already say
+            # SPI_FREQ_DISPLAY (this was the actual "44-second fill" bug).
+            spi_bus.invalidate()
+            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
 
             self._sd_mounted = True
             print("[assets] SD mounted at", _SD_MOUNT, "@ 400kHz data")
@@ -200,7 +209,7 @@ class AssetManager:
         from drivers.spi_bus import spi_bus
         alloc = into is None
         try:
-            spi_bus.spi.init(baudrate=_SD_DATA_BAUD)             # 400kHz for SD
+            spi_bus.set_freq(_SD_DATA_BAUD)                       # 400kHz for SD
             if alloc:
                 into = bytearray(os.stat(path)[6])
             mv   = memoryview(into)
@@ -213,7 +222,7 @@ class AssetManager:
                         break
                     off += n
         finally:
-            spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)   # restore 10MHz
+            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)             # restore 10MHz
         return into if alloc else off
 
     def evict_cache(self, prefix: str = None):

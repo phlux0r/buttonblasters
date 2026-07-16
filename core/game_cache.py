@@ -136,11 +136,11 @@ class _SDBackground(flash_assets.Background):
     speed-management exactly, just applied per-strip instead of whole-file."""
 
     def read_strip(self, i, buf):
-        spi_bus.spi.init(baudrate=_SD_DATA_BAUD)
+        spi_bus.set_freq(_SD_DATA_BAUD)
         try:
             return super().read_strip(i, buf)
         finally:
-            spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)
+            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
 
 
 def open_background(path):
@@ -152,9 +152,9 @@ def open_background(path):
         return flash_assets.Background(path)
     except OSError:
         sd_path = "/sd" + path
-        spi_bus.spi.init(baudrate=_SD_DATA_BAUD)
+        spi_bus.set_freq(_SD_DATA_BAUD)
         try:
             bg = _SDBackground(sd_path)     # header+table read, also bracketed
         finally:
-            spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)
+            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
         return bg
