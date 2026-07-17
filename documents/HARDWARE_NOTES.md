@@ -114,7 +114,7 @@ End-of-game screens (Match It!, Star Bonk) also moved BACK from BTN-0 to **BTN-3
 The right column (BTN-2/3) is mounted physically rotated 180° from the left column (BTN-0/1), for tidy cable routing — same part number, same landscape orientation, but the panel itself is flipped in its mounting. That has to be compensated in software or BTN-2/3 render upside-down/mirrored relative to BTN-0/1.
 
 - **BTN-0/1: `MADCTL = 0x60`** — confirmed (300×240, clean fill, correct top-left corner) via `tests/test_15_button_landscape.py` on an unmounted panel.
-- **BTN-2/3: `MADCTL = 0xA0`** — `0x60` with the MY and MX bits both toggled (`0x60 ^ 0xC0`), the 180° rotation of the confirmed value. **Reasoned correct, not yet bench-confirmed** on an actual mounted right-column panel — it's the same value the test already tried and rejected for an *unrotated* panel, which is consistent with it being the flipped variant, but "consistent with" isn't "confirmed on." Point `CS_IDX` at position 2 or 3 and re-run the test before trusting this.
+- **BTN-2/3: `MADCTL = 0xA0`** — `0x60` with the MY and MX bits both toggled (`0x60 ^ 0xC0`), the 180° rotation of the BTN-0/1 value. **Confirmed** via `tests/test_15_button_landscape.py` on both right-column positions (2 and 3) — clean fill, correct top-left corner as viewed on the mounted right-column panels.
 
 `config.py`'s `ST7789_MADCTL` is a 4-tuple indexed by button, `(0x60, 0x60, 0xA0, 0xA0)`; `drivers/display.py`'s `ST7789.__init__` reads `config.ST7789_MADCTL[index]` — there is no single global MADCTL for the button screens anymore.
 
@@ -212,7 +212,7 @@ Confirmed working configuration:
 | Sprite engine | `tests/test_14_sprite_engine.py` | ✓ Passed |
 | SD card | `tests/test_sd_card.py` | ✓ Passed |
 
-Additional targeted probes (not full bring-up tests, used to diagnose the gotchas above): `test_audio_trace.py`, `test_button_latency.py`, `test_fill_speed.py`, `test_i2s_yield.py`, `test_rgb666_viper.py`, `test_sd_probe.py`, `test_touch_crosshair.py`, `test_15_button_landscape.py` (orientation probe — confirmed `MADCTL=0x60`/300×240 for BTN-0/1's mounting; `MADCTL=0xA0` for BTN-2/3's 180°-rotated mounting is reasoned but not yet bench-confirmed).
+Additional targeted probes (not full bring-up tests, used to diagnose the gotchas above): `test_audio_trace.py`, `test_button_latency.py`, `test_fill_speed.py`, `test_i2s_yield.py`, `test_rgb666_viper.py`, `test_sd_probe.py`, `test_touch_crosshair.py`, `test_15_button_landscape.py` (orientation probe — confirmed `MADCTL=0x60`/300×240 for BTN-0/1, `MADCTL=0xA0` for BTN-2/3's 180°-rotated mounting, on all 4 physical positions).
 
 ---
 

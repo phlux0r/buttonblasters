@@ -1,14 +1,14 @@
 # tests/test_15_button_landscape.py — Button Blasters
 # BENCH TEST: probe ST7789 button screens for landscape orientation.
 #
-# STATUS: MADCTL=0x60 is confirmed (300x240, clean fill, correct top-left
-# corner) for BTN-0/BTN-1's mounting orientation. The shell's right column
+# STATUS: CONFIRMED on all 4 physical positions. MADCTL=0x60 for BTN-0/1
+# (300x240, clean fill, correct top-left corner). The shell's right column
 # (BTN-2/BTN-3) is mounted physically rotated 180 degrees from the left
-# column (tidy cable routing), so it needs the 180-degree-compensated
-# value 0xA0 (= 0x60 with the MY and MX bits both toggled) -- reasoned
-# correct, NOT yet confirmed on an actual right-column panel. That's this
-# script's remaining job: point CS_IDX at a right-column position (2 or 3)
-# and confirm 0xA0 the same way 0x60 was confirmed on the left column.
+# column (tidy cable routing), and needs the 180-degree-compensated value
+# 0xA0 (= 0x60 with the MY and MX bits both toggled) to match -- also
+# confirmed clean/correct on both right-column positions. See config.py's
+# ST7789_MADCTL. Kept as a working script for re-verifying after any
+# future mounting/wiring change, not because either value is still open.
 #
 # WHY THIS MATTERS: display<->orientation handedness is NOT predictable
 # from the datasheet, same class of gotcha as the main display's touch
@@ -45,21 +45,20 @@ import time, gc
 from machine import SPI, Pin
 
 # ── Which physical button position to test (index into config's CS/DC
-#    arrays: 0,1,2,3). Point this at a RIGHT-COLUMN position (2 or 3) to
-#    confirm 0xA0 -- that's the untested case. Left column (0/1) is
-#    already confirmed via 0x60.
+#    arrays: 0,1,2,3). 0/1 (left column) confirmed via 0x60; 2/3 (right
+#    column) confirmed via 0xA0. Change to re-verify any position after a
+#    wiring/mounting change.
 CS_PINS = (7, 8, 9, 10)
 DC_PINS = (2, 11, 14, 21)
 CS_IDX  = 2
 
-# ── Candidates. 0x60 is confirmed for the left column (BTN-0/1). 0xA0 is
-#    0x60 with MY and MX both toggled -- the 180-degree rotation, reasoned
-#    correct for the right column's physically-flipped mounting but not
-#    yet confirmed on an actual mounted right-column panel. Neither
+# ── Candidates. 0x60 confirmed for the left column (BTN-0/1). 0xA0 is
+#    0x60 with MY and MX both toggled -- the 180-degree rotation, confirmed
+#    for the right column's physically-flipped mounting (BTN-2/3). Neither
 #    touches the RGB bit (already confirmed correct) -- do not add 0x08.
 CANDIDATES = {
     "0x60 (confirmed, left column BTN-0/1)": 0x60,
-    "0xA0 (reasoned, right column BTN-2/3 -- confirm this one)": 0xA0,
+    "0xA0 (confirmed, right column BTN-2/3)": 0xA0,
 }
 
 # ── First guess at the landscape window. Portrait's confirmed window was

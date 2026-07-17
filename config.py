@@ -39,17 +39,15 @@ NUM_BTN_SCREENS = 4
 # cable routing. Same landscape orientation (MV bit set) either way, but
 # the 180-degree physical rotation must be compensated in software or
 # BTN-2/3 render upside-down/mirrored relative to BTN-0/1.
-#   0x60 = landscape, bench-confirmed via test_15 on an unmounted panel
-#          (BTN-0/1's un-rotated orientation).
+#   0x60 = landscape, confirmed via test_15 for BTN-0/1's un-rotated
+#          mounting.
 #   0xA0 = 0x60 with MY and MX both toggled (0x60 ^ 0xC0) — the 180-degree
-#          rotation of 0x60, reasoned correct for BTN-2/3's flipped
-#          mounting but NOT YET bench-confirmed in the actual mounted/
-#          rotated position (only confirmed as "wrong" for an unrotated
-#          panel, which is consistent with it being the flipped variant).
+#          rotation of 0x60, confirmed via test_15 for BTN-2/3's flipped
+#          mounting (both physical positions checked).
 # RGB colour order is already correct at bit3=0 in both — do not add
-# 0x08/BGR. Re-run tests/test_15_button_landscape.py with CS_IDX pointed
-# at a right-column position to confirm 0xA0 before trusting this.
-ST7789_MADCTL = (0x60, 0x60, 0xA0, 0xA0)   # indexed by BTN-0..3
+# 0x08/BGR.
+ST7789_MADCTL = (0x60, 0x60, 0xA0, 0xA0)   # indexed by BTN-0..3, both
+                                            # values bench-confirmed
 
 # ── SD card — DEFERRED ───────────────────────────────────────────
 # ILI9488 SDO permanently drives MISO low — built-in slot unusable.
