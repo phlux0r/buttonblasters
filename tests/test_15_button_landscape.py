@@ -1,65 +1,65 @@
 # tests/test_15_button_landscape.py — Button Blasters
 # BENCH TEST: probe ST7789 button screens for landscape orientation.
 #
-# WHY: config.py currently runs the button screens portrait (MADCTL=0x00,
-# confirmed working window 240x300 -- see test_04_button_displays.py and
-# HARDWARE_NOTES.md). If the shell moves to a 2x2 button layout, landscape
-# may fit better mechanically, but rotation is NOT a safe assumption:
-#   - The confirmed portrait window (300 rows) is already a surprise vs.
-#     the panel's 280-row spec, so the landscape window is not guaranteed
-#     to be a clean 300x240 swap -- it could have its own row/column
-#     surprise, the same way portrait did.
-#   - Display<->orientation handedness (mirroring) is NOT predictable from
-#     the datasheet, same class of gotcha as the main display's touch
-#     mapping -- must be confirmed by looking at the actual panel.
+# STATUS: MADCTL=0x60 is confirmed (300x240, clean fill, correct top-left
+# corner) for BTN-0/BTN-1's mounting orientation. The shell's right column
+# (BTN-2/BTN-3) is mounted physically rotated 180 degrees from the left
+# column (tidy cable routing), so it needs the 180-degree-compensated
+# value 0xA0 (= 0x60 with the MY and MX bits both toggled) -- reasoned
+# correct, NOT yet confirmed on an actual right-column panel. That's this
+# script's remaining job: point CS_IDX at a right-column position (2 or 3)
+# and confirm 0xA0 the same way 0x60 was confirmed on the left column.
+#
+# WHY THIS MATTERS: display<->orientation handedness is NOT predictable
+# from the datasheet, same class of gotcha as the main display's touch
+# mapping -- must be confirmed by looking at the actual mounted panel, and
+# a 180-degree physical mounting rotation is exactly the kind of thing
+# that's easy to reason about correctly on paper and still get backwards
+# in practice (e.g. if "top left corner in the last horizontal position"
+# turns out to mean something subtly different than assumed).
 #
 # This script:
 #   [1] Runs the confirmed portrait init, but stops short of the final
 #       MADCTL write so you can pick a candidate.
-#   [2] For each candidate MADCTL (0x60, 0xA0 -- the two 90-degree
-#       rotations of the confirmed-working 0x00, WITHOUT touching the RGB
-#       bit, which is already confirmed correct in portrait -- do not add
-#       0x08 to these), fills the screen at a guessed W x H, then draws a
-#       single coloured square in the TOP-LEFT corner only.
+#   [2] For each candidate MADCTL in CANDIDATES, fills the screen at a
+#       guessed W x H, then draws a single coloured square in the
+#       TOP-LEFT corner only.
 #   [3] You look at the physical panel (mounted the way you intend to use
 #       it) and answer two questions for each candidate:
 #         a) Is the fill using the WHOLE panel -- no black dead strip on
 #            any edge, no wrapped/garbage pixels? If there's a dead strip,
 #            the guessed W/H is too small; if there's garbage, too large.
-#            Adjust PROBE_W/PROBE_H below and rerun.
+#            Adjust PROBE_W/PROBE_H below and rerun. (Already confirmed
+#            300x240 on the left column -- the right column SHOULD match,
+#            same part number, but confirm rather than assume.)
 #         b) Is the corner square actually in the top-left as YOU will
-#            view the mounted panel? If it's in the wrong corner, that
-#            candidate is mirrored/rotated the wrong way -- try the other
-#            MADCTL value (or its ^0x40 / ^0x80 variant -- see CANDIDATES).
-#   [4] Once one candidate looks right on this unit, physically move the
-#       cable to each of the other 3 button positions (or edit CS_IDX
-#       below) and repeat the corner-square check on all four -- same
-#       part number, but the portrait-window surprise means "confirm on
-#       one, trust all four" is exactly the assumption that bit us before.
+#            view the FULLY MOUNTED grid (not the panel in isolation)?
+#            If it's in the wrong corner, try the other CANDIDATES value.
+#   [4] Once confirmed, update config.py's ST7789_MADCTL tuple if the
+#       result differs from the current (0x60, 0x60, 0xA0, 0xA0) guess,
+#       and update HARDWARE_NOTES.md.
 #
-# Record the winning MADCTL + confirmed W/H here and in HARDWARE_NOTES.md,
-# then update config.py (BTN_W/BTN_H) and drivers/display.py's ST7789
-# MADCTL write to match -- every baked button-screen asset (icons, menu
-# tiles, back/replay tiles) will need re-baking at the new dimensions.
+# Record the result here and in HARDWARE_NOTES.md.
 
 import time, gc
 from machine import SPI, Pin
 
 # ── Which physical button position to test (index into config's CS/DC
-#    arrays: 0,1,2,3). Defaults to BTN-2 (CS=GP9, DC=GP14), matching
-#    test_04_button_displays.py. Change to check a different position
-#    without re-wiring.
+#    arrays: 0,1,2,3). Point this at a RIGHT-COLUMN position (2 or 3) to
+#    confirm 0xA0 -- that's the untested case. Left column (0/1) is
+#    already confirmed via 0x60.
 CS_PINS = (7, 8, 9, 10)
 DC_PINS = (2, 11, 14, 21)
 CS_IDX  = 2
 
-# ── Candidates. 0x00 is the confirmed-working portrait value (bit3=RGB,
-#    already correct -- do not add 0x08/BGR to these). 0x20 = MV (row/col
-#    exchange, the actual "make it landscape" bit); MX/MY pick which of
-#    the two 90-degree rotations you get.
+# ── Candidates. 0x60 is confirmed for the left column (BTN-0/1). 0xA0 is
+#    0x60 with MY and MX both toggled -- the 180-degree rotation, reasoned
+#    correct for the right column's physically-flipped mounting but not
+#    yet confirmed on an actual mounted right-column panel. Neither
+#    touches the RGB bit (already confirmed correct) -- do not add 0x08.
 CANDIDATES = {
-    "0x60 (MV+MX)": 0x60,
-    "0xA0 (MV+MY)": 0xA0,
+    "0x60 (confirmed, left column BTN-0/1)": 0x60,
+    "0xA0 (reasoned, right column BTN-2/3 -- confirm this one)": 0xA0,
 }
 
 # ── First guess at the landscape window. Portrait's confirmed window was
@@ -152,13 +152,15 @@ for label, madctl in CANDIDATES.items():
     time.sleep_ms(3000)
 
 print("\n" + "=" * 60)
-print("  Done. Once a candidate looks right:")
-print("   1. Note the winning MADCTL value and confirmed W/H (adjust")
-print("      PROBE_W/PROBE_H above and rerun if the fill wasn't clean).")
-print("   2. Repeat on the other 3 CS_IDX positions (0,1,2,3) --")
-print("      confirm on one, trust all four is what bit us on portrait.")
-print("   3. Update config.py (BTN_W/BTN_H) and the ST7789 MADCTL write")
-print("      in drivers/display.py, and HARDWARE_NOTES.md.")
-print("   4. Every baked button-screen asset needs re-baking at the new")
-print("      dimensions (icons, menu tiles, back/replay tiles).")
+print("  Done. Once a candidate looks right FOR THIS POSITION:")
+print("   1. If CS_IDX was 2 or 3 (right column) and 0xA0 looked correct,")
+print("      that confirms config.py's ST7789_MADCTL = (0x60,0x60,0xA0,0xA0)")
+print("      as-is. If a DIFFERENT value looked correct, update that tuple")
+print("      and HARDWARE_NOTES.md's per-button MADCTL note.")
+print("   2. Repeat on BOTH right-column positions (2 and 3) -- same part")
+print("      number as the left column, but confirm rather than assume,")
+print("      same discipline as the portrait-window surprise taught us.")
+print("   3. Every baked button-screen asset needs re-baking at 300x240")
+print("      (icons, menu tiles, back/replay tiles) regardless of which")
+print("      MADCTL value wins -- that part doesn't change per column.")
 print("=" * 60 + "\n")

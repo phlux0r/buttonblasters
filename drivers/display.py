@@ -181,19 +181,24 @@ def _ensure_blk():
 class ST7789:
     """
     ST7789 1.69" button display driver.
-    Critical: full LovyanGFX init, BLK=GP13 HIGH, 300×240 landscape window
-    (MADCTL=0x60, config.ST7789_MADCTL — bench-confirmed via
-    tests/test_15_button_landscape.py; was 240×300 portrait, MADCTL=0x00).
+    Critical: full LovyanGFX init, BLK=GP13 HIGH, 300×240 landscape window.
+    MADCTL is PER-BUTTON (config.ST7789_MADCTL[index]), not uniform — the
+    2x2 shell mounts BTN-2/3 physically rotated 180° from BTN-0/1, so they
+    need a different MADCTL to compensate. See config.py's comment on
+    ST7789_MADCTL and tests/test_15_button_landscape.py before assuming
+    all 4 behave identically (was 240×300 portrait, MADCTL=0x00, uniform,
+    before the 2x2 shell layout).
     """
 
     def __init__(self, index: int):
         _ensure_blk()
-        self._cs  = Pin(config.PIN_CS_BTN[index],  Pin.OUT, value=1)
-        self._dc  = Pin(config.PIN_DC_BTN[index],  Pin.OUT, value=1)
-        self._rst = (Pin(config.PIN_RST_BTN, Pin.OUT, value=1)
-                     if index == 0 else None)
-        self.w    = config.BTN_W
-        self.h    = config.BTN_H
+        self._cs     = Pin(config.PIN_CS_BTN[index],  Pin.OUT, value=1)
+        self._dc     = Pin(config.PIN_DC_BTN[index],  Pin.OUT, value=1)
+        self._rst    = (Pin(config.PIN_RST_BTN, Pin.OUT, value=1)
+                        if index == 0 else None)
+        self._madctl = config.ST7789_MADCTL[index]
+        self.w       = config.BTN_W
+        self.h       = config.BTN_H
 
     def init_blocking(self):
         if self._rst:
@@ -212,7 +217,7 @@ class ST7789:
         self._wc(0x01); time.sleep_ms(150)
         self._wc(0x11); time.sleep_ms(255)
         self._wc(0x3A); self._wd(0x05)
-        self._wc(0x36); self._wd(config.ST7789_MADCTL)   # landscape
+        self._wc(0x36); self._wd(self._madctl)   # landscape, per-button
         self._wc(0xB2); self._wd(0x0C,0x0C,0x00,0x33,0x33)
         self._wc(0xB7); self._wd(0x35)
         self._wc(0xBB); self._wd(0x19)

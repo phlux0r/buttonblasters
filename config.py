@@ -33,11 +33,23 @@ PIN_BLK_BTN  = 13                  # MUST be driven HIGH from GPIO
 BTN_W        = 300
 BTN_H        = 240
 NUM_BTN_SCREENS = 4
-ST7789_MADCTL = 0x60   # landscape, bench-confirmed on CS_IDX 2 (test_15).
-#   0x00 = portrait (previous default, 240x300)   0x60 = landscape (current)
-# RGB colour order is already correct at bit3=0 — do not add 0x08/BGR.
-# Confirm on the other 3 physical positions before trusting universally
-# (see tests/test_15_button_landscape.py).
+# Per-button MADCTL — NOT uniform. Physical mounting is a 2x2 matrix
+# (0|2 top row, 1|3 bottom row) with the right column (BTN-2/3) mounted
+# physically rotated 180 degrees from the left column (BTN-0/1), for tidy
+# cable routing. Same landscape orientation (MV bit set) either way, but
+# the 180-degree physical rotation must be compensated in software or
+# BTN-2/3 render upside-down/mirrored relative to BTN-0/1.
+#   0x60 = landscape, bench-confirmed via test_15 on an unmounted panel
+#          (BTN-0/1's un-rotated orientation).
+#   0xA0 = 0x60 with MY and MX both toggled (0x60 ^ 0xC0) — the 180-degree
+#          rotation of 0x60, reasoned correct for BTN-2/3's flipped
+#          mounting but NOT YET bench-confirmed in the actual mounted/
+#          rotated position (only confirmed as "wrong" for an unrotated
+#          panel, which is consistent with it being the flipped variant).
+# RGB colour order is already correct at bit3=0 in both — do not add
+# 0x08/BGR. Re-run tests/test_15_button_landscape.py with CS_IDX pointed
+# at a right-column position to confirm 0xA0 before trusting this.
+ST7789_MADCTL = (0x60, 0x60, 0xA0, 0xA0)   # indexed by BTN-0..3
 
 # ── SD card — DEFERRED ───────────────────────────────────────────
 # ILI9488 SDO permanently drives MISO low — built-in slot unusable.

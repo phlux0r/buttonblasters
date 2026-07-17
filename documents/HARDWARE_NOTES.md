@@ -80,7 +80,7 @@ cs=1                            # raised once, at the very end
 
 - `BLK` (backlight) must be driven **HIGH from GPIO** (GP13) — tying it to 3.3V does not work on this module.
 - Requires the full LovyanGFX-derived power-up init; a minimal 6-command init does not activate the frame buffer.
-- Native working window is **240×300** (portrait), not the datasheet's 240×280 — 300 rows fills the full physical screen. **Landscape (current, for the 2×2 shell layout): 300×240, `MADCTL=0x60`** — bench-confirmed via `tests/test_15_button_landscape.py` on physical position 2 (CS=GP9, DC=GP14); the window stayed a clean 300×240 with no dead/garbage strip, same total pixel budget as portrait just rotated. RGB colour order was already correct at MADCTL bit3=0 in portrait — the landscape value keeps that bit (`0x60`, not `0x68`), don't add BGR when experimenting further. **Not yet re-confirmed on the other 3 physical positions** — same part number so it should hold, but the 240→300 portrait surprise came from bench-testing, not the datasheet, so don't assume it's universal without checking.
+- Native working window is **240×300** (portrait), not the datasheet's 240×280 — 300 rows fills the full physical screen. **Landscape (current, for the 2×2 shell layout): 300×240** — bench-confirmed clean (no dead/garbage strip, same total pixel budget as portrait just rotated) via `tests/test_15_button_landscape.py`. RGB colour order was already correct at MADCTL bit3=0 in portrait — the landscape values keep that bit, don't add BGR when experimenting further. **MADCTL is per-button, not a single value** — see the dedicated subsection below (2×2 mounting rotates BTN-2/3 180° from BTN-0/1).
 - GP5 is dead on this board, so DC for BTN-0 uses GP2 instead of the "expected" pin.
 - SPI at 10 MHz confirmed stable. No MISO connection needed — displays are write-only.
 - Same RAMWR/CS rule as the ILI9488: CS stays low from the `0x2C` command through all pixel data, rising once at the end. ST7789 doesn't need per-byte CS framing on command bytes, but the RAMWR→pixel transition must hold CS low or fills produce noise.
@@ -109,13 +109,22 @@ Only BTN-0 and BTN-1 swapped roles; BTN-2/BTN-3 were already correct for the new
 
 End-of-game screens (Match It!, Star Bonk) also moved BACK from BTN-0 to **BTN-3** (bottom-right), with "Play Again" now on BTN-0,1,2 — a deliberate choice by the project owner, not a semantic-consistency inference (BTN-3 now doubles as "NEXT" in the menu and "BACK to menu" in an end screen — different meaning, same physical button, intentional).
 
-Working init sequence (current, landscape):
+#### MADCTL is per-button, not uniform
+
+The right column (BTN-2/3) is mounted physically rotated 180° from the left column (BTN-0/1), for tidy cable routing — same part number, same landscape orientation, but the panel itself is flipped in its mounting. That has to be compensated in software or BTN-2/3 render upside-down/mirrored relative to BTN-0/1.
+
+- **BTN-0/1: `MADCTL = 0x60`** — confirmed (300×240, clean fill, correct top-left corner) via `tests/test_15_button_landscape.py` on an unmounted panel.
+- **BTN-2/3: `MADCTL = 0xA0`** — `0x60` with the MY and MX bits both toggled (`0x60 ^ 0xC0`), the 180° rotation of the confirmed value. **Reasoned correct, not yet bench-confirmed** on an actual mounted right-column panel — it's the same value the test already tried and rejected for an *unrotated* panel, which is consistent with it being the flipped variant, but "consistent with" isn't "confirmed on." Point `CS_IDX` at position 2 or 3 and re-run the test before trusting this.
+
+`config.py`'s `ST7789_MADCTL` is a 4-tuple indexed by button, `(0x60, 0x60, 0xA0, 0xA0)`; `drivers/display.py`'s `ST7789.__init__` reads `config.ST7789_MADCTL[index]` — there is no single global MADCTL for the button screens anymore.
+
+Working init sequence (current, landscape, BTN-0/1 shown — BTN-2/3 use `0xA0` for the MADCTL line, everything else identical):
 
 ```python
 wc(0x01); time.sleep_ms(150)    # SW reset
 wc(0x11); time.sleep_ms(255)    # sleep out
 wc(0x3A); wd(0x05)              # RGB565
-wc(0x36); wd(0x60)              # MADCTL — landscape (was 0x00 portrait)
+wc(0x36); wd(0x60)              # MADCTL — 0x60 (BTN-0/1) or 0xA0 (BTN-2/3)
 wc(0xB2); wd(0x0C,0x0C,0x00,0x33,0x33)
 wc(0xB7); wd(0x35)
 wc(0xBB); wd(0x19)
@@ -203,7 +212,7 @@ Confirmed working configuration:
 | Sprite engine | `tests/test_14_sprite_engine.py` | ✓ Passed |
 | SD card | `tests/test_sd_card.py` | ✓ Passed |
 
-Additional targeted probes (not full bring-up tests, used to diagnose the gotchas above): `test_audio_trace.py`, `test_button_latency.py`, `test_fill_speed.py`, `test_i2s_yield.py`, `test_rgb666_viper.py`, `test_sd_probe.py`, `test_touch_crosshair.py`, `test_15_button_landscape.py` (orientation probe — confirmed `MADCTL=0x60`, 300×240 on physical position 2 only so far).
+Additional targeted probes (not full bring-up tests, used to diagnose the gotchas above): `test_audio_trace.py`, `test_button_latency.py`, `test_fill_speed.py`, `test_i2s_yield.py`, `test_rgb666_viper.py`, `test_sd_probe.py`, `test_touch_crosshair.py`, `test_15_button_landscape.py` (orientation probe — confirmed `MADCTL=0x60`/300×240 for BTN-0/1's mounting; `MADCTL=0xA0` for BTN-2/3's 180°-rotated mounting is reasoned but not yet bench-confirmed).
 
 ---
 
