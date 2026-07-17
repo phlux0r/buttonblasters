@@ -333,8 +333,9 @@ class ShapeMatchGame(BaseGame):
     # ── End screen ────────────────────────────────────────────────
 
     async def _end_screen(self):
-        """Result card + BTN-0 'Back' / BTN-1-3 'Play again' (all three show
-        the same reused tile). No timeout — waits indefinitely for a choice."""
+        """Result card + BTN-3 'Back' (bottom-right) / BTN-0,1,2 'Play again'
+        (all three show the same reused tile). No timeout — waits
+        indefinitely for a choice."""
         try:
             self.leds.stop_effect()
         except Exception:
@@ -349,9 +350,9 @@ class ShapeMatchGame(BaseGame):
             await self.display.show_splash(
                 "You got", score_str, bg_color=rgb(10, 60, 20))
 
-        if not await self.display.paint_btn_bg(0, BACK_TILE_PATH):
-            await self._show_back_fallback(0)
-        for idx in (1, 2, 3):
+        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
+            await self._show_back_fallback(3)
+        for idx in (0, 1, 2):
             if not await self.display.paint_btn_bg(idx, REPLAY_TILE_PATH):
                 await self._show_replay_fallback(idx)
 
@@ -372,9 +373,9 @@ class ShapeMatchGame(BaseGame):
                 continue
             if evt != "press":
                 continue
-            if btn == 0 or btn == 4:      # BTN-0 tile, or hardware BACK/HOME
+            if btn == 3 or btn == 4:      # BTN-3 tile, or hardware BACK/HOME
                 return "back"
-            if btn in (1, 2, 3):
+            if btn in (0, 1, 2):
                 return "again"
 
     async def _show_back_fallback(self, idx):

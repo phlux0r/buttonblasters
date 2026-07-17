@@ -1,11 +1,12 @@
 # core/game_base.py — Button Blasters
 # BaseGame — abstract base class every game must subclass.
 #
-# Button ID reference for game code:
-#   0 = SCREEN-0 / BTN-0  (PREV ← in menu, context action in game)
-#   1 = SCREEN-1 / BTN-1  (context action)
-#   2 = SCREEN-2 / BTN-2  (context action)
-#   3 = SCREEN-3 / BTN-3  (NEXT → in menu, context action in game)
+# Button ID reference for game code — physical layout is a 2x2 matrix
+# (0|2 top row, 1|3 bottom row):
+#   0 = SCREEN-0 / BTN-0  (top-left,    context action in game)
+#   1 = SCREEN-1 / BTN-1  (bottom-left, PREV ← in menu, context action in game)
+#   2 = SCREEN-2 / BTN-2  (top-right,   context action in game)
+#   3 = SCREEN-3 / BTN-3  (bottom-right, NEXT → in menu, context action in game)
 #   4 = BACK/HOME          (always quits game / returns to menu)
 #
 # To add a new game:

@@ -87,6 +87,28 @@ cs=1                            # raised once, at the very end
 - Fill speed: ~177 ms per full frame in portrait (RGB565 native — faster than the main display's RGB666); not yet re-measured in landscape (same pixel count, should be ~equal).
 - **Switching orientation invalidates every full-screen button asset baked at the old dimensions** — the 96×96 icon sprites (Match's `sprb_*`, Bonk's `spr_*`/`sprb_*`) are unaffected since they're centered by a formula that recomputes from `config.BTN_W`/`BTN_H`, but anything baked at the whole button canvas (menu tiles, prev/next/back tiles) needs re-baking at 300×240 and its filename updated accordingly (`_240x300.bz` → `_300x240.bz`).
 
+### Physical mounting: 2×2 matrix, button roles remapped
+
+The shell mounts the four button screens as a 2×2 matrix, not a linear row:
+
+```
+0 | 2
+1 | 3
+```
+
+Left column {0,1} = "previous", right column {2,3} = "next". Button roles (was a linear-row assumption of BTN-0=PREV, BTN-1/2=preview, BTN-3=NEXT):
+
+| Position | Old role (linear) | New role (2×2) |
+|---|---|---|
+| BTN-0 (top-left) | PREV ← nav | game preview (idx-1) |
+| BTN-1 (bottom-left) | game preview | PREV ← nav |
+| BTN-2 (top-right) | game preview | game preview (idx+1) — unchanged |
+| BTN-3 (bottom-right) | NEXT → nav | NEXT → nav — unchanged |
+
+Only BTN-0 and BTN-1 swapped roles; BTN-2/BTN-3 were already correct for the new layout. `drivers/buttons.py`'s `BTN_PREV`/`BTN_NEXT` aliases are the single source of truth for the nav roles — `core/menu.py`'s "select" handling (which button launches which preview) was updated to match by hand, since it isn't derived from those aliases.
+
+End-of-game screens (Match It!, Star Bonk) also moved BACK from BTN-0 to **BTN-3** (bottom-right), with "Play Again" now on BTN-0,1,2 — a deliberate choice by the project owner, not a semantic-consistency inference (BTN-3 now doubles as "NEXT" in the menu and "BACK to menu" in an end screen — different meaning, same physical button, intentional).
+
 Working init sequence (current, landscape):
 
 ```python

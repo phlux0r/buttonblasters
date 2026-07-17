@@ -78,8 +78,9 @@ MCP_BTN_SCREEN = (0, 1, 2, 3)   # SCREEN-0..3 on MCP GP0-GP3
 MCP_BTN_BACK   = 4               # BACK/HOME on MCP GP4
 MCP_BTN_MASK   = 0x1F            # bits 0-4
 
-# BTN-0 = PREV ← in menu   BTN-3 = NEXT → in menu
-# BTN-1 / BTN-2 = game previews / context actions
+# Physical layout: 2x2 matrix, 0|2 top row, 1|3 bottom row.
+# BTN-1 = PREV ← in menu   BTN-3 = NEXT → in menu
+# BTN-0 / BTN-2 = game previews / context actions
 BTN_DEBOUNCE_MS = 30
 BTN_HOLD_MS     = 600
 BTN_POLL_MS     = 10             # MCP23008 poll interval

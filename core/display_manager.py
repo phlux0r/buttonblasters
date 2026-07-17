@@ -32,7 +32,7 @@ ORANGE  = 0xFC60
 PURPLE  = 0x781F
 DARK    = 0x18C3
 
-# Menu nav colours for BTN-0 (PREV) and BTN-3 (NEXT)
+# Menu nav colours for BTN-1 (PREV) and BTN-3 (NEXT)
 PREV_COLOR = 0x4810   # dark purple tint
 NEXT_COLOR = 0x0B60   # dark green tint
 
@@ -246,18 +246,18 @@ class DisplayManager:
     # ── Menu nav indicators ──────────────────────────────────────
 
     async def show_prev_indicator(self, active: bool = False):
-        """Draw PREV ← on BTN-0. active=True when pressed."""
+        """Draw PREV ← on BTN-1 (bottom-left in the 2x2 layout). active=True when pressed."""
         bg = rgb(92, 50, 200) if active else rgb(23, 12, 50)
-        await self.btns[0].fill_rgb(*((92, 50, 200) if active
+        await self.btns[1].fill_rgb(*((92, 50, 200) if active
                                        else (23, 12, 50)))
-        await self.draw_btn_border(0, rgb(92, 50, 200))
+        await self.draw_btn_border(1, rgb(92, 50, 200))
         label = "<  PREV"
         lx = config.BTN_W // 2 - len(label) * 4
-        await self.text_btn(0, label, max(4, lx),
+        await self.text_btn(1, label, max(4, lx),
                             config.BTN_H // 2 - 4, WHITE, bg, scale=1)
 
     async def show_next_indicator(self, active: bool = False):
-        """Draw NEXT → on BTN-3. active=True when pressed."""
+        """Draw NEXT → on BTN-3 (bottom-right in the 2x2 layout). active=True when pressed."""
         bg = rgb(30, 180, 60) if active else rgb(7, 45, 15)
         await self.btns[3].fill_rgb(*((30, 180, 60) if active
                                        else (7, 45, 15)))

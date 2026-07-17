@@ -394,9 +394,9 @@ class StarBonkGame(BaseGame):
         await self.display.show_splash("Great bonking!", score_str,
                                        bg_color=rgb(10, 60, 20))
 
-        if not await self.display.paint_btn_bg(0, BACK_TILE_PATH):
-            await self._show_back_fallback(0)
-        for idx in (1, 2, 3):
+        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
+            await self._show_back_fallback(3)
+        for idx in (0, 1, 2):
             if not await self.display.paint_btn_bg(idx, REPLAY_TILE_PATH):
                 await self._show_replay_fallback(idx)
 
@@ -416,9 +416,9 @@ class StarBonkGame(BaseGame):
                 continue
             if evt != "press":
                 continue
-            if btn == 0 or btn == 4:
+            if btn == 3 or btn == 4:      # BTN-3 tile, or hardware BACK/HOME
                 return "back"
-            if btn in (1, 2, 3):
+            if btn in (0, 1, 2):
                 return "again"
 
     async def _show_back_fallback(self, idx):

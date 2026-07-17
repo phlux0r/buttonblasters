@@ -5,11 +5,12 @@
 # The MCP23008 is polled every BTN_POLL_MS over I2C (shared bus
 # with FT6236 touch at 0x38). MCP is at 0x20.
 #
-# Button IDs:
-#   0 = SCREEN-0  (BTN-0 display — PREV ← in menu)
-#   1 = SCREEN-1  (BTN-1 display — game preview)
-#   2 = SCREEN-2  (BTN-2 display — game preview)
-#   3 = SCREEN-3  (BTN-3 display — NEXT → in menu)
+# Button IDs — physical layout is a 2x2 matrix (0|2 top row, 1|3 bottom
+# row), left column {0,1} = "previous", right column {2,3} = "next":
+#   0 = SCREEN-0  (BTN-0 display, top-left    — game preview, idx-1)
+#   1 = SCREEN-1  (BTN-1 display, bottom-left — PREV ← in menu)
+#   2 = SCREEN-2  (BTN-2 display, top-right   — game preview, idx+1)
+#   3 = SCREEN-3  (BTN-3 display, bottom-right — NEXT → in menu)
 #   4 = BACK/HOME
 #
 # Touch events injected into same queue via attach_touch():
@@ -84,9 +85,9 @@ BTN_SCREEN_2 = 2
 BTN_SCREEN_3 = 3
 BTN_BACK     = 4
 
-# Menu role aliases
-BTN_PREV = BTN_SCREEN_0   # ← shown on BTN-0 display
-BTN_NEXT = BTN_SCREEN_3   # → shown on BTN-3 display
+# Menu role aliases — see the 2x2 layout note above
+BTN_PREV = BTN_SCREEN_1   # ← shown on BTN-1 display (bottom-left)
+BTN_NEXT = BTN_SCREEN_3   # → shown on BTN-3 display (bottom-right)
 
 # MCP23008 registers
 _IODIR    = 0x00
@@ -260,9 +261,9 @@ class ButtonManager:
         """
         Block until a menu-relevant event.
         Returns (action, data):
-          "prev"   — BTN-0 (PREV ←)
-          "next"   — BTN-3 (NEXT →)
-          "select" — BTN-1 or BTN-2, data = btn id
+          "prev"   — BTN-1 (PREV ←, bottom-left)
+          "next"   — BTN-3 (NEXT →, bottom-right)
+          "select" — BTN-0 or BTN-2 (game preview), data = btn id
           "back"   — BACK/HOME
           "tap"    — screen tap, data = (x, y)
           "swipe"  — swipe gesture, data = direction string

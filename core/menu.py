@@ -1,17 +1,20 @@
 # core/menu.py — Button Blasters
 # Animated game carousel menu.
 #
+# Physical layout is a 2x2 matrix (0|2 top row, 1|3 bottom row); left
+# column {0,1} is "previous", right column {2,3} is "next".
+#
 # Layout:
 #   Main screen  → selected game card (icon + title + description + stars)
-#   BTN-0        → PREV ← indicator
-#   BTN-1        → adjacent game preview (idx-1)
-#   BTN-2        → adjacent game preview (idx+1)
-#   BTN-3        → NEXT → indicator
+#   BTN-0        → adjacent game preview (idx-1), top-left
+#   BTN-1        → PREV ← indicator, bottom-left
+#   BTN-2        → adjacent game preview (idx+1), top-right
+#   BTN-3        → NEXT → indicator, bottom-right
 #
 # Navigation:
-#   BTN-0 press  → scroll left (PREV)
+#   BTN-1 press  → scroll left (PREV)
 #   BTN-3 press  → scroll right (NEXT)
-#   BTN-1 press  → launch preview game (idx-1 … wraps)
+#   BTN-0 press  → launch preview game (idx-1 … wraps)
 #   BTN-2 press  → launch preview game (idx+1 … wraps)
 #   BACK press   → (reserved — no-op in menu, returns to top of carousel)
 #   Touch tap on lower half of main screen → launch selected game
@@ -57,7 +60,7 @@ class Menu:
             leds.start_effect(leds.idle_rainbow())
         # Static PREV/NEXT arrow cards — painted ONCE (button screens retain),
         # so scrolling only repaints the two dynamic preview screens.
-        if not await display.paint_btn_bg(0, BTN_PREV_PATH):
+        if not await display.paint_btn_bg(1, BTN_PREV_PATH):
             await display.show_prev_indicator()
         if not await display.paint_btn_bg(3, BTN_NEXT_PATH):
             await display.show_next_indicator()
@@ -77,9 +80,9 @@ class Menu:
                 await audio.play_sfx("menu_move.wav")
 
             elif action == "select":
-                # BTN-1 → launch idx-1 preview, BTN-2 → launch idx+1 preview
+                # BTN-0 → launch idx-1 preview, BTN-2 → launch idx+1 preview
                 btn = data
-                if btn == 1:
+                if btn == 0:
                     self._idx = (self._idx - 1) % self._n
                 elif btn == 2:
                     self._idx = (self._idx + 1) % self._n
@@ -206,10 +209,10 @@ class Menu:
         await self._render_battery(BLACK)
 
     async def _render_btn_screens(self):
-        """BTN-1 = prev game preview, BTN-2 = next game preview.
-           BTN-0 (PREV) and BTN-3 (NEXT) are static — painted once in run()."""
+        """BTN-0 = prev game preview, BTN-2 = next game preview.
+           BTN-1 (PREV) and BTN-3 (NEXT) are static — painted once in run()."""
         prev_idx = (self._idx - 1) % self._n
-        await self._render_btn_game(1, prev_idx)
+        await self._render_btn_game(0, prev_idx)
         next_idx = (self._idx + 1) % self._n
         await self._render_btn_game(2, next_idx)
 

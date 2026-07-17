@@ -4,11 +4,9 @@
 # Copy games/example/ to games/<your_game_id>/ and build from here.
 # Then uncomment the matching line in games/registry.py.
 #
-# Button IDs in this game:
-#   0 = SCREEN-0 → left/option A
-#   1 = SCREEN-1 → left-centre/option B
-#   2 = SCREEN-2 → right-centre/option C
-#   3 = SCREEN-3 → right/option D
+# Button IDs in this game — physical layout is a 2x2 matrix:
+#   0 = SCREEN-0 → top-left/option A       2 = SCREEN-2 → top-right/option C
+#   1 = SCREEN-1 → bottom-left/option B    3 = SCREEN-3 → bottom-right/option D
 #   4 = BACK     → quit game
 
 import asyncio
