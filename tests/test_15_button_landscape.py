@@ -1,11 +1,11 @@
 # tests/test_15_button_landscape.py — Button Blasters
 # BENCH TEST: probe ST7789 button screens for landscape orientation.
 #
-# STATUS: CONFIRMED on all 4 physical positions. MADCTL=0x60 for BTN-0/1
+# STATUS: CONFIRMED on all 4 physical positions. MADCTL=0xA0 for BTN-0/1
 # (300x240, clean fill, correct top-left corner). The shell's right column
 # (BTN-2/BTN-3) is mounted physically rotated 180 degrees from the left
 # column (tidy cable routing), and needs the 180-degree-compensated value
-# 0xA0 (= 0x60 with the MY and MX bits both toggled) to match -- also
+# 0x60 (= 0xA0 with the MY and MX bits both toggled) to match -- also
 # confirmed clean/correct on both right-column positions. See config.py's
 # ST7789_MADCTL. Kept as a working script for re-verifying after any
 # future mounting/wiring change, not because either value is still open.
@@ -36,7 +36,7 @@
 #            view the FULLY MOUNTED grid (not the panel in isolation)?
 #            If it's in the wrong corner, try the other CANDIDATES value.
 #   [4] Once confirmed, update config.py's ST7789_MADCTL tuple if the
-#       result differs from the current (0x60, 0x60, 0xA0, 0xA0) guess,
+#       result differs from the current (0xA0, 0xA0, 0x60, 0x60) guess,
 #       and update HARDWARE_NOTES.md.
 #
 # Record the result here and in HARDWARE_NOTES.md.
@@ -45,20 +45,20 @@ import time, gc
 from machine import SPI, Pin
 
 # ── Which physical button position to test (index into config's CS/DC
-#    arrays: 0,1,2,3). 0/1 (left column) confirmed via 0x60; 2/3 (right
-#    column) confirmed via 0xA0. Change to re-verify any position after a
+#    arrays: 0,1,2,3). 0/1 (left column) confirmed via 0xA0; 2/3 (right
+#    column) confirmed via 0x60. Change to re-verify any position after a
 #    wiring/mounting change.
 CS_PINS = (7, 8, 9, 10)
 DC_PINS = (2, 11, 14, 21)
 CS_IDX  = 2
 
-# ── Candidates. 0x60 confirmed for the left column (BTN-0/1). 0xA0 is
-#    0x60 with MY and MX both toggled -- the 180-degree rotation, confirmed
+# ── Candidates. 0xA0 confirmed for the left column (BTN-0/1). 0x60 is
+#    0xA0 with MY and MX both toggled -- the 180-degree rotation, confirmed
 #    for the right column's physically-flipped mounting (BTN-2/3). Neither
 #    touches the RGB bit (already confirmed correct) -- do not add 0x08.
 CANDIDATES = {
-    "0x60 (confirmed, left column BTN-0/1)": 0x60,
-    "0xA0 (confirmed, right column BTN-2/3)": 0xA0,
+    "0xA0 (confirmed, left column BTN-0/1)": 0xA0,
+    "0x60 (confirmed, right column BTN-2/3)": 0x60,
 }
 
 # ── First guess at the landscape window. Portrait's confirmed window was
@@ -152,8 +152,8 @@ for label, madctl in CANDIDATES.items():
 
 print("\n" + "=" * 60)
 print("  Done. Once a candidate looks right FOR THIS POSITION:")
-print("   1. If CS_IDX was 2 or 3 (right column) and 0xA0 looked correct,")
-print("      that confirms config.py's ST7789_MADCTL = (0x60,0x60,0xA0,0xA0)")
+print("   1. If CS_IDX was 2 or 3 (right column) and 0x60 looked correct,")
+print("      that confirms config.py's ST7789_MADCTL = (0xA0,0xA0,0x60,0x60)")
 print("      as-is. If a DIFFERENT value looked correct, update that tuple")
 print("      and HARDWARE_NOTES.md's per-button MADCTL note.")
 print("   2. Repeat on BOTH right-column positions (2 and 3) -- same part")
