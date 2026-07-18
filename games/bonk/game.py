@@ -179,10 +179,28 @@ class StarBonkGame(BaseGame):
     async def load(self):
         gc.collect()
 
+        # Acquire hardest-first: the 150KB strip buffer pool needs two 45KB
+        # CONTIGUOUS blocks, the single biggest/most placement-sensitive ask
+        # in this game's load(). Seat it FIRST, before any other new heap
+        # allocation (including the 20KB legend arena below) gets a chance
+        # to land in the middle of what would otherwise be a large
+        # contiguous free run and split it. MicroPython's GC here doesn't
+        # compact/move live objects, so once something smaller stakes a
+        # claim it stays there for the rest of the session — order matters,
+        # not just gc.collect() (which the pool already calls on its own,
+        # right before allocating). Historically confirmed the hard way:
+        # loading it after the legend arena produced a real MemoryError on
+        # hardware ("rgb666[1] did not seat") despite ~200KB free overall.
+        self._adapter = MainScreenAdapter(make_main_strip_renderer())
+        self._adapter.open()   # seats the 150KB strip buffer pool
+
         # Persistent LE sprite sheets for the main-screen engine — small
         # enough (4 x 18.4KB = ~74KB) to keep all 4 resident in the global
         # arena for the whole game, unlike Match's per-match reload (which
-        # exists because Match rotates through 18 icons, not 4).
+        # exists because Match rotates through 18 icons, not 4). Writes
+        # into the arena's already-seated 96KB buffer (boot-time alloc via
+        # flash_assets.init()), not a new heap allocation, so it's safe
+        # after the pool regardless of ordering.
         flash_assets.arena.reset()
         self._sheets = {}
         for name in TARGETS:
@@ -198,10 +216,8 @@ class StarBonkGame(BaseGame):
         # Small SEPARATE arena for the button-legend icons (BE, opaque) —
         # kept apart from the global arena because that one holds the LE
         # sprites for the whole game and arena.reset() is all-or-nothing.
+        # Small and comes last on purpose (see hardest-first note above).
         self._legend_arena = flash_assets.SpriteArena(20 * 1024)
-
-        self._adapter = MainScreenAdapter(make_main_strip_renderer())
-        self._adapter.open()   # seats the 150KB strip buffer pool
 
         try:
             bg = game_cache.open_background(BOARD_PATH)
