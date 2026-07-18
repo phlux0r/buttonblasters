@@ -64,19 +64,51 @@ import config
 # --- geometry / freqs, sourced from config (single source of truth) -------
 MAIN_W       = config.MAIN_W
 MAIN_H       = config.MAIN_H
-STRIP_H      = const(16)               # compositing granularity -- single
+STRIP_H      = const(8)                # compositing granularity -- single
                                         # source of truth; core/sprite_engine.py
                                         # imports this rather than redefining
-                                        # it. Was 32 (2x45KB+2x30KB=150KB pool)
-                                        # until that failed to seat on real
-                                        # hardware with a MemoryError even
-                                        # after fixing the allocation order in
-                                        # games/bonk/game.py's load() -- see
-                                        # HARDWARE_NOTES.md. Halving to 16
-                                        # halves the largest single contiguous
-                                        # block the pool needs (45KB -> 22.5KB)
-                                        # at the cost of ~2x the strip count
-                                        # per repaint.
+                                        # it.
+                                        #
+                                        # History: 32 -> 16 -> 8, each step
+                                        # forced by a CONFIRMED on-hardware
+                                        # MemoryError, not preemptive tuning.
+                                        # 32 (150KB pool, 45KB largest block)
+                                        # failed even after fixing load()'s
+                                        # allocation order. 16 (75KB pool,
+                                        # 22.5KB largest block) ALSO failed on
+                                        # a later attempt in the same
+                                        # power-on session (222KB free
+                                        # overall, but no 22.5KB contiguous
+                                        # run). 8 (37.5KB pool, 11.25KB
+                                        # largest block) is the next step in
+                                        # the same lever, at ~4x the original
+                                        # strip count (40 vs 10 for a full
+                                        # 320-row repaint) -- not yet
+                                        # bench-confirmed either way.
+                                        #
+                                        # This recurring pattern -- same
+                                        # class of failure resurfacing after
+                                        # each halving -- suggests the REAL
+                                        # fix may be structural, not size:
+                                        # MainScreenAdapter.open()/close()
+                                        # allocates and frees this pool once
+                                        # per Bonk game SESSION (not once per
+                                        # boot), so repeated play across one
+                                        # power-on period churns the heap
+                                        # with same-shape alloc/free cycles a
+                                        # non-compacting allocator can't
+                                        # perfectly reclaim. If STRIP_H=8
+                                        # still fails, the next lever isn't a
+                                        # smaller buffer -- it's making this
+                                        # pool persistent (seated once,
+                                        # module-level, like
+                                        # flash_assets.arena already is)
+                                        # instead of per-session. That's a
+                                        # bigger architectural change
+                                        # (permanent heap reservation whether
+                                        # or not Bonk is played) and hasn't
+                                        # been applied here -- confirm
+                                        # STRIP_H=8 is insufficient first.
 DISPLAY_FREQ = config.SPI_FREQ_DISPLAY
 SD_FREQ      = config.SPI_FREQ_SD_DATA
 

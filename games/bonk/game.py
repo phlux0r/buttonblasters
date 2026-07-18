@@ -41,7 +41,7 @@
 #     wizard, goblin, star, mushroom.
 #   bonk/sprb_<name>_96x96x1.sz  BE, kind 3, opaque — the button-screen
 #     legend icon. Same 4 names.
-#   bonk/bg_bonk_480x320.bz      LE, kind 0, strip_h=16 — the main board.
+#   bonk/bg_bonk_480x320.bz      LE, kind 0, strip_h=8 — the main board.
 #     Can be fully illustrated everywhere (sprite_engine reveals real
 #     pixels on despawn, no flat-colour play-zone constraint).
 #   menu/bgm_menu-bonk_480x320.bz  BE, kind 1 — menu card (optional;
@@ -74,7 +74,13 @@ TARGET_POINTS = {"wizard": 1, "goblin": 2, "star": 3, "mushroom": 4}
 ROUND_POOL_SIZES = (2, 3, 4)      # round 1..3 -- how many of the 4 are live
 ROUND_HITS = 8                    # bonks per round (assumption -- tune freely)
 TOTAL_HITS = ROUND_HITS * len(ROUND_POOL_SIZES)
-MAX_SCORE = TOTAL_HITS * max(TARGET_POINTS.values())   # generous ceiling
+# NOT max(TARGET_POINTS)*TOTAL_HITS (96) -- the player never chooses which
+# target spawns, only whether they hit it in time, so a flawless run still
+# only AVERAGES ~2.5 pts/hit (mean of 1,2,3,4) = ~60, not 96. A worst-case
+# ceiling made 2-3 stars practically unreachable regardless of how well a
+# child actually plays -- the score would keep improving but stars would
+# look "stuck". Calibrate to the average-case perfect run instead.
+MAX_SCORE = round(TOTAL_HITS * (sum(TARGET_POINTS.values()) / len(TARGET_POINTS)))
 
 ASSET_DIR = "/assets/static/bonk/"          # Tier A: small, always resident
 BOARD_PATH = "/assets/bonk/bg_bonk_480x320.bz"   # Tier B: SD-installed at load
@@ -239,6 +245,11 @@ class StarBonkGame(BaseGame):
     async def run(self) -> GameResult:
         self._running = True
         self.score = 0
+        self._session_best = 0   # best round-set score THIS session -- "Play
+                                  # Again" resets self.score, so without this
+                                  # only your LAST attempt before quitting
+                                  # would ever be reported, even if an
+                                  # earlier attempt this session scored higher
 
         if self.USES_COUNTDOWN:
             await self.countdown(3)   # only ever fires once — never on replay
@@ -287,11 +298,17 @@ class StarBonkGame(BaseGame):
             if not self._running:
                 break   # mid-game BACK/HOME — exit immediately, no end screen
 
+            self._session_best = max(self._session_best, self.score)
             choice = await self._end_screen()
             if choice == "back":
                 break
             self.score = 0   # "again" — straight back into round 1
 
+        # Report the best completed round-set this session, not just
+        # whatever self.score happens to be at the moment of quitting (which
+        # is 0/low if BACK was pressed mid-round on a "Play Again" replay,
+        # even though an earlier attempt this session scored higher).
+        self.score = max(self.score, self._session_best)
         return self._make_result()
 
     async def unload(self):
@@ -315,8 +332,21 @@ class StarBonkGame(BaseGame):
         return pool[:n]
 
     async def _show_round_intro(self, round_no):
-        await self.display.show_splash("Round %d" % round_no, "Get ready!",
-                                       bg_color=rgb(20, 10, 60))
+        # Custom draw, not display.show_splash() — that helper's scale is
+        # fixed (title=2, subtitle=1) and shared by every game; bumping it
+        # there would resize Match's/other games' splashes too. Bonk wants
+        # this specific announcement bigger.
+        bg = rgb(20, 10, 60)
+        await self.display.fill_main(bg)
+        title = "Round %d" % round_no
+        tscale = 4
+        tx = config.MAIN_W // 2 - len(title) * 4 * tscale
+        await self.display.text_main(title, tx, 100, WHITE, bg, scale=tscale)
+        sub = "Get ready!"
+        sscale = 2
+        sx = config.MAIN_W // 2 - len(sub) * 4 * sscale
+        await self.display.text_main(sub, sx, 180, YELLOW, bg, scale=sscale)
+
         if self.audio and self.audio.ready:
             await self.audio.play_sfx("game_start.wav", wait=True)
         await asyncio.sleep_ms(INTRO_HOLD_MS)
@@ -379,7 +409,7 @@ class StarBonkGame(BaseGame):
         if result:
             self._hits += 1
             self.score += TARGET_POINTS[name]
-            asyncio.create_task(_guarded(self._bonk_feedback()))
+            await self._bonk_feedback()
         return True
 
     async def _wait_hit_or_timeout(self, x, y, deadline_ms):
@@ -403,12 +433,23 @@ class StarBonkGame(BaseGame):
                 # miss — keep waiting, same target still live
 
     async def _bonk_feedback(self):
+        # LED (non-blocking, PIO — no SPI0) and haptic (fire-and-forget GPIO
+        # pulse — no SPI0) can safely overlap the next target's render.
+        # Audio is AWAITED, not fire-and-forget: correct.wav most likely
+        # resolves via the /sd/audio/sfx/ fallback (no Tier B audio baked
+        # for this game yet), and SD shares the SPI0 bus with the displays.
+        # A fire-and-forget clip's SD file read could previously overlap
+        # the NEXT target's sprite_engine render, which also writes SPI0
+        # without spi_bus's lock (accepted for Bonk only on the assumption
+        # everything in this loop stays sequential — see HARDWARE_NOTES.md)
+        # — two unlocked SPI0 writers racing, confirmed on hardware as
+        # screen tearing right when the next target appeared.
         if self.leds and self.leds.ready:
             self.leds.start_effect(self.leds.correct_flash())
+        if haptic.ready:
+            asyncio.create_task(_guarded(haptic.double_pulse()))
         if self.audio and self.audio.ready:
             await self.audio.play_sfx("correct.wav", wait=True)
-        if haptic.ready:
-            await haptic.double_pulse()
 
     # ── End screen ────────────────────────────────────────────────
 
