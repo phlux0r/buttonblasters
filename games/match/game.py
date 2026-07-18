@@ -75,7 +75,7 @@ ICON = 96
 BTN_ICON_X  = (config.BTN_W  - ICON) // 2       # 240 -> 72
 BTN_ICON_Y  = (config.BTN_H  - ICON) // 2       # 300 -> 102
 MAIN_ICON_X = (config.MAIN_W - ICON) // 2       # 480 -> 192
-MAIN_ICON_Y = (config.MAIN_H - ICON) // 2 + 20  # 320 -> 132
+MAIN_ICON_Y = (config.MAIN_H - ICON) // 2       # 320 -> 112
 
 _FALLBACK = (RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA)
 
@@ -91,7 +91,7 @@ PROMPT_Y     = 24          # prompt y inside the header (score sits at y=4)
 INTRO_PATH    = "/assets/match/bgm_intro-%s_480x320.bz"  # % cat; BE, kind 1
 INTRO_HOLD_MS = 400       # extra beat the category card stays up (tunable)
 RESULT_PATH    = "/assets/match/bgm_result_480x320.bz"  # BE, kind 1
-RESULT_SCORE_Y = 108      # score overlay y (scale-4, in the card's flat zone)
+RESULT_SCORE_Y = 140      # score overlay y (scale-4, in the card's flat zone)
 
 
 def _fb_idx(name):
@@ -115,7 +115,7 @@ class ShapeMatchGame(BaseGame):
     USES_COUNTDOWN = False       # no clock in Match It! — skip the 3-2-1
     MENU_HEADER   = 0xEA16        # hot pink menu-card header (matches the board)
     MENU_STARS_FG = 0xe681     # GOLD — menu-card star colour (default)
-    MENU_STARS_BG = 0xff9b     # CREAM — flat colour of the card's stars zone
+    MENU_STARS_BG = 0xffff     # WHITE — flat colour of the card's stars zone
     MAX_SCORE     = MAX_SCORE   # module constant (18) — reuses the value
                                 # already used for the "X of 18" end-screen text
 

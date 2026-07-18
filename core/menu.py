@@ -286,4 +286,4 @@ class Menu:
         cx = config.MAIN_W // 2
         label = "WAIT..."
         lx = cx - len(label) * 8
-        await display.text_main(label, lx, 270, 0xe681, 0xff9b, scale=2)
+        await display.text_main(label, lx, 270, 0xe681, 0xffff, scale=2)
