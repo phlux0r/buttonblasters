@@ -251,6 +251,18 @@ class StarBonkGame(BaseGame):
                     self._running = False
                     break
 
+                # Quiet-point collect: _bonk_feedback() churns a fresh 4KB
+                # buffer + I2S object per hit (drivers/audio.py), and this
+                # port's GC is non-moving mark-and-sweep — those dead
+                # objects sit as unreclaimed, unmerged holes until the next
+                # collect. Confirmed on hardware: a full playthrough hit
+                # "MemoryError: memory allocation failed, allocating 8192
+                # bytes" mid-round without this. Once per round (no
+                # audio/display/sprite work in flight here), matching the
+                # "collect at a quiet moment" discipline used elsewhere in
+                # this codebase (load()/unload(), StripBufferPool).
+                gc.collect()
+
                 pool = self._pick_pool(ROUND_POOL_SIZES[round_no - 1])
                 await self._show_round_intro(round_no)
 

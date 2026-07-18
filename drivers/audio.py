@@ -101,6 +101,12 @@ class AudioManager:
         self._volume     = 1.0
         self._drain_evt  = None      # Event the IRQ sets (per-playback owner)
         self._game_root  = None      # /assets/<game_id>/audio while a game runs
+        self._read_buf   = None      # lazy WAV read buffer, reused across
+                                      # _play_wav() calls (see there — was a
+                                      # fresh bytearray(AUDIO_BUF_BYTES) every
+                                      # call, a repeating uncached allocation
+                                      # that contributed to a confirmed
+                                      # on-hardware MemoryError)
         self._init_hardware()
 
     def _init_hardware(self):
@@ -277,7 +283,12 @@ class AudioManager:
             header = f.read(44)
             if header[:4] != b'RIFF' or header[8:12] != b'WAVE':
                 return
-            buf = bytearray(config.AUDIO_BUF_BYTES)
+            # Reused across calls (grow-if-needed) instead of a fresh
+            # bytearray every clip — this port's GC doesn't move/compact,
+            # so repeated allocate-and-abandon here fragments the heap.
+            if self._read_buf is None or len(self._read_buf) < config.AUDIO_BUF_BYTES:
+                self._read_buf = bytearray(config.AUDIO_BUF_BYTES)
+            buf = self._read_buf
             mv  = memoryview(buf)
             self._i2s = self._make_i2s()   # one session for the whole clip
             try:
