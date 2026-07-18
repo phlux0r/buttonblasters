@@ -143,7 +143,27 @@ class AppKernel:
                 leds.start_effect(leds.chase(100, 200, 100))
             await game_cache.install(game.GAME_ID)      # Tier B — SD → littlefs
             audio.set_game(game.GAME_ID)                # game's Tier B audio dir
-            await game.load()
+            try:
+                await game.load()
+            except Exception as e:
+                # game.run() has always had this net; load() didn't, so a
+                # load-time failure (e.g. Star Bonk's StripBufferPool
+                # MemoryError on a fragmented heap) used to propagate all
+                # the way out of AppKernel.run() and crash the whole app
+                # instead of bouncing back to the menu.
+                print(f"[kernel] {game.GAME_ID} failed to load: {e}")
+                leds.stop_effect()
+                await display.show_splash("Couldn't load", game.TITLE,
+                                          bg_color=rgb(60, 15, 15))
+                await asyncio.sleep_ms(2000)
+                try:
+                    await game.unload()
+                except Exception as e2:
+                    print(f"[kernel] {game.GAME_ID} unload after failed "
+                         f"load also raised: {e2}")
+                audio.set_game(None)
+                game_cache.evict(game.GAME_ID)
+                continue   # back to the menu — skip run()/save/unload below
             leds.stop_effect()          # not off() — off() clears pixels but
                                         # leaves the effect task rewriting them
 
