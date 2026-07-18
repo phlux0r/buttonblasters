@@ -3,16 +3,27 @@
 #
 # WHAT THIS IS
 #   Paints full-screen illustrated scenes (My Big Day Out, Garden Grow,
-#   Magic Bakery, Shadow Match) that are too large to hold as a full
-#   framebuffer (480x320 RGB565 = 300KB won't fit). It streams the scene to
-#   the panel in 480x32 strips ("bands"), converting RGB565 -> RGB666 with the
-#   viper band converter and writing each band under the hard-won RAMWR/CS
-#   rule. Shape Match and the menus keep their existing fill+blit path -- this
-#   is ONLY for the illustrated full-screen scenes.
+#   Magic Bakery, Shadow Match, Star Bonk's board) that are too large to hold
+#   as a full framebuffer (480x320 RGB565 = 300KB won't fit). It streams the
+#   scene to the panel in 480x16 strips ("bands"), converting RGB565 -> RGB666
+#   with the viper band converter and writing each band under the hard-won
+#   RAMWR/CS rule. Shape Match and the menus keep their existing fill+blit
+#   path -- this is ONLY for the illustrated full-screen scenes.
 #
-# MEASURED BUDGET (test_12_boot_ram.py, post-boot v3.0)
-#   446KB MicroPython heap; ~352KB free / 187KB largest-contiguous; 47% frag.
-#   STRIP_H=32 + SD double-buffer (150KB) seats with 202KB to spare. Verified.
+# MEASURED BUDGET -- TRUST WITH CAUTION
+#   test_12_boot_ram.py measured 446KB heap, ~352KB free / 187KB
+#   largest-contiguous, 47% frag, IMMEDIATELY POST-BOOT, and called a
+#   STRIP_H=32 (150KB) pool "verified" there. That measurement is real but
+#   was misleading for this pool's actual usage: Star Bonk's load() (the
+#   first real caller) doesn't run at boot, it runs after menu carousel
+#   rendering, LED effects, and a Tier B asset install have all churned the
+#   heap -- and it failed to seat there TWICE on real hardware (~205-211KB
+#   free, but no single ~45KB contiguous block), even after fixing an
+#   allocation-order bug in games/bonk/game.py's load(). STRIP_H is now 16
+#   (75KB pool, 22.5KB largest single block) specifically because "verified
+#   at boot" did not mean "verified where it's actually used" -- re-measure
+#   at the ACTUAL call site if you're validating a heap budget claim here,
+#   not at boot.
 #
 # DESIGN
 #   * StripRenderer is always alive but holds NO big buffers at rest.
@@ -53,8 +64,19 @@ import config
 # --- geometry / freqs, sourced from config (single source of truth) -------
 MAIN_W       = config.MAIN_W
 MAIN_H       = config.MAIN_H
-STRIP_H      = const(32)               # compositing granularity -- must
-                                        # match core/sprite_engine.py's STRIP_H
+STRIP_H      = const(16)               # compositing granularity -- single
+                                        # source of truth; core/sprite_engine.py
+                                        # imports this rather than redefining
+                                        # it. Was 32 (2x45KB+2x30KB=150KB pool)
+                                        # until that failed to seat on real
+                                        # hardware with a MemoryError even
+                                        # after fixing the allocation order in
+                                        # games/bonk/game.py's load() -- see
+                                        # HARDWARE_NOTES.md. Halving to 16
+                                        # halves the largest single contiguous
+                                        # block the pool needs (45KB -> 22.5KB)
+                                        # at the cost of ~2x the strip count
+                                        # per repaint.
 DISPLAY_FREQ = config.SPI_FREQ_DISPLAY
 SD_FREQ      = config.SPI_FREQ_SD_DATA
 

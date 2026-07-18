@@ -59,8 +59,8 @@ Typical game usage
 
 import micropython
 import uasyncio as asyncio
+from drivers.strip_renderer import STRIP_H   # single source of truth
 
-STRIP_H = 32
 MAX_ACTIVE = 8
 MAX_STEP = 32          # px per tick per axis
 KEY_LE = 0xF81F        # magenta, native u16 read of LE data

@@ -41,7 +41,7 @@
 #     wizard, goblin, star, mushroom.
 #   bonk/sprb_<name>_96x96x1.sz  BE, kind 3, opaque — the button-screen
 #     legend icon. Same 4 names.
-#   bonk/bg_bonk_480x320.bz      LE, kind 0, strip_h=32 — the main board.
+#   bonk/bg_bonk_480x320.bz      LE, kind 0, strip_h=16 — the main board.
 #     Can be fully illustrated everywhere (sprite_engine reveals real
 #     pixels on despawn, no flat-colour play-zone constraint).
 #   menu/bgm_menu-bonk_480x320.bz  BE, kind 1 — menu card (optional;
