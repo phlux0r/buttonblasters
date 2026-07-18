@@ -28,10 +28,12 @@ FLAG_RAW = 0x01
 # filename prefix -> expected kind, matching the convention used throughout
 # this repo (see documents/HARDWARE_NOTES.md, games/*/game.py headers).
 PREFIX_EXPECTATIONS = {
-    "bgm_": 1,   # BE background — direct blit_rgb565 path (Match's board/intro/result)
-    "bg_":  0,   # LE background — core/sprite_engine.py path (Star Bonk's board)
-    "sprb_": 3,  # BE sprite — direct blit path (icons, button legends)
-    "spr_": 2,   # LE sprite — sprite_engine, magenta-keyed
+    "bgm_": 1,    # BE background — direct blit_rgb565 path (Match's board/intro/result)
+    "bg_":  0,    # LE background — core/sprite_engine.py path (Star Bonk's board)
+    "sprb_": 3,   # BE sprite — direct blit path (icons, button legends)
+    "spr_": 2,    # LE sprite — sprite_engine, magenta-keyed
+    "btn_": 1,    # BE background — menu nav/back/replay tiles (core/menu.py,
+                  # games/*/game.py's BACK_TILE_PATH/REPLAY_TILE_PATH)
 }
 
 # Single-strip allocation from the 96KB flash_assets arena (see
