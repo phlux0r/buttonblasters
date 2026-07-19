@@ -190,17 +190,33 @@ class DisplayManager:
                            w: int, h: int, x=0, y=0):
         await self.btns[idx].blit_rgb565(memoryview(buf), x, y, w, h)
 
-    async def paint_main_bg(self, path):
+    async def paint_main_bg(self, path, arena=None):
         """Stream a BE (kind 1) 480x320 background from flash to the main
         display, one strip at a time via an arena-borrowed buffer. Returns
-        True if painted, False on any error (caller supplies the fallback)."""
+        True if painted, False on any error (caller supplies the fallback).
+
+        arena: bump-arena to borrow the per-strip scratch buffer from.
+        Defaults to the shared flash_assets.arena, which is safe for
+        transient callers (Match It!'s per-round icon reloads, the menu,
+        the boot splash) that don't rely on anything else still being
+        resident there. Pass your OWN persistent arena if your game keeps
+        other data resident in the shared arena across this call —
+        confirmed on hardware as real memory corruption otherwise: Star
+        Bonk keeps its 4 main-screen sprite sheets seated in
+        flash_assets.arena for the whole game session, and this method's
+        unconditional arena.reset()+alloc() (from its own end-screen tile/
+        result paints) was resetting that SAME arena and overwriting the
+        sprites at its START — wizard and goblin (loaded first, in
+        TARGETS order) got corrupted on the second "Play Again" onward;
+        star and mushroom (loaded later, at higher offsets) escaped."""
+        a = arena if arena is not None else flash_assets.arena
         bg = None
         try:
             bg = game_cache.open_background(path)
             if not bg.big_endian:
                 raise ValueError("main bg must be BE (kind 1); got LE: " + path)
-            flash_assets.arena.reset()
-            buf = flash_assets.arena.alloc(bg.w * bg.strip_h * 2)
+            a.reset()
+            buf = a.alloc(bg.w * bg.strip_h * 2)
             for i in range(bg.n_strips):
                 rows = bg.read_strip(i, buf)
                 await self.main.blit_rgb565(
@@ -213,19 +229,24 @@ class DisplayManager:
         finally:
             if bg is not None:
                 bg.close()
-            flash_assets.arena.reset()
+            a.reset()
 
-    async def paint_btn_bg(self, idx, path):
+    async def paint_btn_bg(self, idx, path, arena=None):
         """Stream a BE (kind 1) 300x240 background from flash to button screen
         idx, one strip at a time via an arena-borrowed buffer. Returns True if
-        painted, False on any error (caller supplies the fallback)."""
+        painted, False on any error (caller supplies the fallback).
+
+        arena: see paint_main_bg() — same shared-arena-corruption hazard,
+        same fix (pass your own persistent arena if you keep other data
+        resident in the shared one)."""
+        a = arena if arena is not None else flash_assets.arena
         bg = None
         try:
             bg = game_cache.open_background(path)
             if not bg.big_endian:
                 raise ValueError("btn bg must be BE (kind 1); got LE: " + path)
-            flash_assets.arena.reset()
-            buf = flash_assets.arena.alloc(bg.w * bg.strip_h * 2)
+            a.reset()
+            buf = a.alloc(bg.w * bg.strip_h * 2)
             for i in range(bg.n_strips):
                 rows = bg.read_strip(i, buf)
                 await self.blit_btn_buf(
@@ -238,7 +259,7 @@ class DisplayManager:
         finally:
             if bg is not None:
                 bg.close()
-            flash_assets.arena.reset()
+            a.reset()
 
     # ── Text rendering (8×8 framebuf font) ──────────────────────
 
