@@ -49,6 +49,7 @@ from pathlib import Path
 STRIP_H = 32
 WBITS = 10                    # 1KB decompressor window on-device
 MAGIC = b"BBA1"
+ALPHA_THRESHOLD = 128         # hard cutout point -- see ffmpeg_to_raw()
 
 # Caps (must match flash_assets.py on-device)
 MAX_FRAME_DIM = 96
@@ -83,13 +84,32 @@ def png_dimensions(path: Path):
 
 
 def ffmpeg_to_raw(png: Path, w: int, h: int, pixfmt: str, matte: str) -> bytes:
-    """Flatten PNG onto a matte colour and convert to raw RGB565 bytes."""
+    """Flatten PNG onto a matte colour and convert to raw RGB565 bytes.
+
+    Colour-keyed sprites (spr_/sprb_) need every non-key pixel to survive
+    RGB565 packing bit-exact, and every "background" pixel to come out
+    bit-exact matte -- the on-device compositor (core/sprite_engine.py's
+    _blit_key) does a plain != comparison against the key colour, no
+    tolerance. A plain `overlay` alpha-BLENDS the source over the matte,
+    so any source pixel with partial alpha (anti-aliased art edges, or a
+    fill/bucket tool that only clears fully-transparent pixels and leaves
+    a ring of low-alpha pixels right at the silhouette) comes out as a
+    blended near-matte colour instead of the matte itself -- confirmed on
+    real baked sprites as a magenta fringe hugging every character, and
+    reproduced+fixed with a synthetic alpha=128 test PNG. Fix: hard-
+    threshold alpha to 0/255 BEFORE compositing, so overlay always either
+    keeps the source pixel's exact RGB or reveals the exact matte -- never
+    a blend of the two, regardless of what alpha the source PNG actually
+    has at its edges."""
     cmd = [
         "ffmpeg", "-y", "-v", "error",
         "-f", "lavfi", "-i", f"color=c={matte}:s={w}x{h}",
         "-i", str(png),
         "-filter_complex",
-        f"[0:v][1:v]overlay=shortest=1:format=auto,format={pixfmt}",
+        f"[1:v]format=rgba,split=2[rgba1][rgba2];"
+        f"[rgba1]alphaextract,lut=y='if(gte(val,{ALPHA_THRESHOLD}),255,0)'[hardalpha];"
+        f"[rgba2][hardalpha]alphamerge[hardsrc];"
+        f"[0:v][hardsrc]overlay=shortest=1:format=auto,format={pixfmt}",
         "-frames:v", "1", "-f", "rawvideo", "pipe:1",
     ]
     proc = subprocess.run(cmd, capture_output=True)
