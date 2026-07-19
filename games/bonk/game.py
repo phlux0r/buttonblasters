@@ -131,7 +131,25 @@ BACK_TILE_PATH   = "/assets/menu/btn_back_300x240.bz"        # shared across gam
 # Seating it once and only .reset()-ing (a bump-pointer rewind, not a new
 # allocation) thereafter means it's carved out before any per-session churn
 # exists, and it can never need to seat into a fragmented heap again.
-_legend_arena = None
+#
+# Dual purpose (renamed from _legend_arena): also used by _end_screen() to
+# paint BACK_TILE_PATH/REPLAY_TILE_PATH/RESULT_PATH via paint_btn_bg()/
+# paint_main_bg()'s arena= param, instead of letting those calls fall back
+# to the SHARED flash_assets.arena. Confirmed on hardware as real memory
+# corruption otherwise: this game's 4 main-screen sprite sheets (wizard/
+# goblin/star/mushroom) live in flash_assets.arena for the whole session
+# (see load()), and paint_main_bg/paint_btn_bg unconditionally reset+
+# reallocate whatever arena they're given -- every "Play Again" ran
+# _end_screen(), which reset the SHARED arena and overwrote the sprites
+# sitting at its start. wizard and goblin (loaded first, in TARGETS
+# order) got clobbered from the second playthrough onward; star and
+# mushroom (loaded later, at higher offsets) were never reached by the
+# ~19-30KB strip buffers _end_screen() was allocating. Sized to fit the
+# largest single strip request across BOTH uses (one legend icon, 96x96
+# BE = 18,432B; RESULT_PATH's 480-wide strip = 30,720B), never both at
+# once -- legend icons are only read during round play, end-screen tiles
+# only after a round-set finishes.
+_scratch_arena = None
 
 
 def _main_asset_path(name):
@@ -243,19 +261,20 @@ class StarBonkGame(BaseGame):
                 print("[bonk] main sprite load failed:", name, e)
                 self._sheets[name] = None
 
-        # Small SEPARATE arena for the button-legend icons (BE, opaque) —
-        # kept apart from the global arena because that one holds the LE
-        # sprites for the whole game and arena.reset() is all-or-nothing.
-        # Persistent (see module-level _legend_arena comment above): only
-        # the FIRST Bonk load this power-on session actually allocates;
-        # every load after that just rewinds the existing arena's bump
-        # pointer, so it can't refragment the heap on replay.
-        global _legend_arena
-        if _legend_arena is None:
-            _legend_arena = flash_assets.SpriteArena(20 * 1024)
+        # Small SEPARATE arena for the button-legend icons AND the
+        # end-screen tile/result paints (BE, opaque) — kept apart from the
+        # global arena because that one holds the LE sprites for the whole
+        # game and arena.reset() is all-or-nothing. Persistent (see
+        # module-level _scratch_arena comment above): only the FIRST Bonk
+        # load this power-on session actually allocates; every load after
+        # that just rewinds the existing arena's bump pointer, so it can't
+        # refragment the heap on replay.
+        global _scratch_arena
+        if _scratch_arena is None:
+            _scratch_arena = flash_assets.SpriteArena(32 * 1024)
         else:
-            _legend_arena.reset()
-        self._legend_arena = _legend_arena
+            _scratch_arena.reset()
+        self._scratch_arena = _scratch_arena
 
         try:
             bg = game_cache.open_background(BOARD_PATH)
@@ -389,10 +408,10 @@ class StarBonkGame(BaseGame):
                 await self.display.fill_btn(i, BLACK)
                 continue
             await self.display.fill_btn(i, LEGEND_BG)
-            self._legend_arena.reset()
+            self._scratch_arena.reset()
             try:
                 sheet = flash_assets.SpriteSheet(_btn_asset_path(name),
-                                                 use_arena=self._legend_arena)
+                                                 use_arena=self._scratch_arena)
                 if not sheet.big_endian:
                     raise ValueError("legend icon must be BE (kind 3)")
                 await self.display.blit_btn_buf(i, sheet.frame(0), ICON, ICON,
@@ -401,7 +420,7 @@ class StarBonkGame(BaseGame):
                 print("[bonk] legend icon failed:", name, e)
                 col = _FALLBACK[i % len(_FALLBACK)]
                 await self.display.fill_btn(i, col)
-        self._legend_arena.reset()
+        self._scratch_arena.reset()
 
     async def _draw_header(self, round_no):
         await self.display.main.fill(HEADER_COLOR, 0, 0, config.MAIN_W, HEADER_H)
@@ -506,7 +525,12 @@ class StarBonkGame(BaseGame):
         score_str = "%d pts" % self.score
         stars     = self._stars_for(self.score)
         star_str  = ("*" * stars) + ("-" * (3 - stars))
-        if await self.display.paint_main_bg(RESULT_PATH):
+        # arena=self._scratch_arena on every paint_*_bg call below — NOT the
+        # default shared flash_assets.arena, which still holds this game's
+        # 4 persistent main-screen sprite sheets (see load()). Using the
+        # default here was the exact cause of the wizard/goblin corruption
+        # bug: see the module-level _scratch_arena comment for the full story.
+        if await self.display.paint_main_bg(RESULT_PATH, arena=self._scratch_arena):
             ssx = config.MAIN_W // 2 - len(score_str) * 8
             await self.display.text_main(
                 score_str, ssx, RESULT_SCORE_Y, 0xEA16, WHITE, scale=2)
@@ -520,10 +544,10 @@ class StarBonkGame(BaseGame):
             await self.display.text_main(   # below show_splash's subtitle line
                 star_str, stx, 172, YELLOW, rgb(10, 60, 20), scale=3)
 
-        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
+        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH, arena=self._scratch_arena):
             await self._show_back_fallback(3)
         for idx in (0, 1, 2):
-            if not await self.display.paint_btn_bg(idx, REPLAY_TILE_PATH):
+            if not await self.display.paint_btn_bg(idx, REPLAY_TILE_PATH, arena=self._scratch_arena):
                 await self._show_replay_fallback(idx)
 
         # All drawing done — now the cheer, so playback doesn't overlap any
