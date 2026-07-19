@@ -84,7 +84,9 @@ MAX_SCORE = round(TOTAL_HITS * (sum(TARGET_POINTS.values()) / len(TARGET_POINTS)
 ASSET_DIR = "/assets/static/bonk/"          # Tier A: small, always resident
 BOARD_PATH = "/assets/bonk/bg_bonk_480x320.bz"   # Tier B: SD-installed at load
 RESULT_PATH    = "/assets/bonk/bgm_result_480x320.bz"   # Tier B, same as BOARD_PATH
-RESULT_SCORE_Y = 140      # score overlay y -- matches Match It!'s result card
+RESULT_SCORE_Y = 124      # score overlay y -- matches Match It!'s result card,
+                          # one line above RESULT_STARS_Y for the star rating
+RESULT_STARS_Y = 152      # star rating overlay y, scale-3, below the score
 
 # ── Geometry ─────────────────────────────────────────────────────
 ICON = 96
@@ -502,13 +504,21 @@ class StarBonkGame(BaseGame):
             pass
 
         score_str = "%d pts" % self.score
+        stars     = self._stars_for(self.score)
+        star_str  = ("*" * stars) + ("-" * (3 - stars))
         if await self.display.paint_main_bg(RESULT_PATH):
             ssx = config.MAIN_W // 2 - len(score_str) * 8
             await self.display.text_main(
                 score_str, ssx, RESULT_SCORE_Y, 0xEA16, WHITE, scale=2)
+            stx = config.MAIN_W // 2 - len(star_str) * 12   # scale 3 -> char 24, half 12
+            await self.display.text_main(
+                star_str, stx, RESULT_STARS_Y, YELLOW, WHITE, scale=3)
         else:
             await self.display.show_splash("Great bonking!", score_str,
                                            bg_color=rgb(10, 60, 20))
+            stx = config.MAIN_W // 2 - len(star_str) * 12
+            await self.display.text_main(   # below show_splash's subtitle line
+                star_str, stx, 172, YELLOW, rgb(10, 60, 20), scale=3)
 
         if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
             await self._show_back_fallback(3)
