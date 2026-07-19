@@ -16,7 +16,7 @@ import asyncio
 import json
 import time
 
-from core.display_manager import display, rgb
+from core.display_manager import display, rgb, warm_text_scratch
 from core.menu import Menu
 from core.game_base import GameResult
 from core import game_cache
@@ -56,6 +56,13 @@ class AppKernel:
         # any subsystem (touch/audio/LEDs/SD) churns it, and before the boot
         # card paints (paint_main_bg borrows the arena). One 96KB alloc.
         flash_assets.init()
+
+        # 1c. Same argument, same freshest-heap moment: pre-grow the shared
+        # text-scratch buffers to the largest size any game will ever ask
+        # for (currently Bonk's scale-10 "GO!", 38.4KB), instead of letting
+        # that grow happen lazily mid-game on a fragmented heap — confirmed
+        # on hardware to MemoryError there otherwise.
+        warm_text_scratch()
 
         # Boot splash — baked card if present, else the text splash.
         if not await display.paint_main_bg(_BOOT_BG):
