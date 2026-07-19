@@ -65,7 +65,6 @@ from core import game_cache
 from core.sprite_engine import SpriteEngine, STRIP_H
 from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
 from drivers import flash_assets
-from drivers.touch import TOUCH_TAP
 from drivers.haptic import haptic
 
 # ── Content ──────────────────────────────────────────────────────
@@ -103,13 +102,32 @@ INTRO_HOLD_MS = 400
 
 # ── Appearance ───────────────────────────────────────────────────
 HEADER_COLOR = rgb(40, 20, 90)     # deep purple HUD band
-LEGEND_BG    = DARK                 # idle colour for an unpopulated button
+LEGEND_BG    = WHITE                 # populated-target tile bg -- matches
+                                      # Match It!'s ICON_BG convention (icons
+                                      # are baked opaque-on-white, so they
+                                      # blend seamlessly on a white tile)
 FALLBACK_BOARD_COLOR = rgb(30, 70, 40)   # flat meadow, used if the real
                                           # board asset is missing/invalid
 
 REPLAY_TILE_PATH = "/assets/menu/btn_menu-bonk_300x240.bz"   # own menu tile,
                                                               # reused, 0 extra KB
 BACK_TILE_PATH   = "/assets/menu/btn_back_300x240.bz"        # shared across games
+
+# Module-level, seated ONCE per power-on session (not re-allocated every
+# game load()) -- the same fix already proven for flash_assets.arena, and
+# flagged-but-not-yet-needed for the strip buffer pool in strip_renderer.py.
+# Confirmed on hardware: a SECOND Bonk session (menu -> Bonk -> menu ->
+# Bonk again) failed "memory allocation failed, allocating 20480 bytes" --
+# exactly this arena's size -- even though the much larger strip pool had
+# already seated fine moments earlier in that same load(). The leftover
+# free space after THAT carve was scattered into fragments all under 20KB;
+# gc.collect() reclaims dead objects but this non-compacting GC doesn't
+# defragment, so a fresh alloc+free of this arena every session accumulates
+# exactly the same failure mode already documented for the strip pool.
+# Seating it once and only .reset()-ing (a bump-pointer rewind, not a new
+# allocation) thereafter means it's carved out before any per-session churn
+# exists, and it can never need to seat into a fragmented heap again.
+_legend_arena = None
 
 
 def _main_asset_path(name):
@@ -185,20 +203,22 @@ class StarBonkGame(BaseGame):
     async def load(self):
         gc.collect()
 
-        # Acquire hardest-first: the 150KB strip buffer pool needs two 45KB
-        # CONTIGUOUS blocks, the single biggest/most placement-sensitive ask
-        # in this game's load(). Seat it FIRST, before any other new heap
-        # allocation (including the 20KB legend arena below) gets a chance
-        # to land in the middle of what would otherwise be a large
-        # contiguous free run and split it. MicroPython's GC here doesn't
-        # compact/move live objects, so once something smaller stakes a
-        # claim it stays there for the rest of the session — order matters,
-        # not just gc.collect() (which the pool already calls on its own,
-        # right before allocating). Historically confirmed the hard way:
-        # loading it after the legend arena produced a real MemoryError on
-        # hardware ("rgb666[1] did not seat") despite ~200KB free overall.
+        # Acquire hardest-first: the strip buffer pool (currently ~37.5KB at
+        # STRIP_H=8, two ~11.25KB CONTIGUOUS RGB666 blocks + two 7.5KB
+        # RGB565 blocks — see drivers/strip_renderer.py for the STRIP_H
+        # history) is still the biggest/most placement-sensitive ask in
+        # this game's load(). Seat it FIRST, before any other new heap
+        # allocation gets a chance to land in the middle of what would
+        # otherwise be a large contiguous free run and split it.
+        # MicroPython's GC here doesn't compact/move live objects, so once
+        # something smaller stakes a claim it stays there for the rest of
+        # the session — order matters, not just gc.collect() (which the
+        # pool already calls on its own, right before allocating).
+        # Historically confirmed the hard way: loading it after the legend
+        # arena produced a real MemoryError on hardware ("rgb666[1] did not
+        # seat") despite ~200KB free overall.
         self._adapter = MainScreenAdapter(make_main_strip_renderer())
-        self._adapter.open()   # seats the 150KB strip buffer pool
+        self._adapter.open()   # seats the strip buffer pool
 
         # Persistent LE sprite sheets for the main-screen engine — small
         # enough (4 x 18.4KB = ~74KB) to keep all 4 resident in the global
@@ -222,8 +242,16 @@ class StarBonkGame(BaseGame):
         # Small SEPARATE arena for the button-legend icons (BE, opaque) —
         # kept apart from the global arena because that one holds the LE
         # sprites for the whole game and arena.reset() is all-or-nothing.
-        # Small and comes last on purpose (see hardest-first note above).
-        self._legend_arena = flash_assets.SpriteArena(20 * 1024)
+        # Persistent (see module-level _legend_arena comment above): only
+        # the FIRST Bonk load this power-on session actually allocates;
+        # every load after that just rewinds the existing arena's bump
+        # pointer, so it can't refragment the heap on replay.
+        global _legend_arena
+        if _legend_arena is None:
+            _legend_arena = flash_assets.SpriteArena(20 * 1024)
+        else:
+            _legend_arena.reset()
+        self._legend_arena = _legend_arena
 
         try:
             bg = game_cache.open_background(BOARD_PATH)
@@ -418,6 +446,20 @@ class StarBonkGame(BaseGame):
         while True:
             if time.ticks_diff(deadline_ms, time.ticks_ms()) <= 0:
                 return False
+
+            # Live touch polling, not the discrete TOUCH_TAP queue event —
+            # TOUCH_TAP only fires on finger-lift and is dropped entirely if
+            # held past LONG_PRESS_MS or dragged past TAP_MAX_TRAVEL, both
+            # common for a 4-7yo stabbing at a fast-moving target. Checking
+            # touch_down/touch_pos directly catches a hit the instant a
+            # finger lands in the target zone, whether or not it's ever
+            # lifted cleanly, and needs no debounce of its own since a miss
+            # just keeps the loop going until the real deadline.
+            if self.buttons.touch_down:
+                tx, ty = self.buttons.touch_pos or (0, 0)
+                if self.tap_hit(tx, ty, rect):
+                    return True
+
             try:
                 btn, evt = self.buttons._queue.get_nowait()
             except Exception:
@@ -426,11 +468,9 @@ class StarBonkGame(BaseGame):
             if btn == 4 and evt == "press":
                 self.quit()
                 return "quit"
-            if btn == TOUCH_TAP and evt == "tap":
-                tx, ty = self.buttons.touch_pos or (0, 0)
-                if self.tap_hit(tx, ty, rect):
-                    return True
-                # miss — keep waiting, same target still live
+            # Discrete touch events (TOUCH_TAP/SWIPE/LONG_PRESS) are just
+            # drained here so they don't pile up in the queue — live polling
+            # above already owns hit detection.
 
     async def _bonk_feedback(self):
         # LED (non-blocking, PIO — no SPI0) and haptic (fire-and-forget GPIO

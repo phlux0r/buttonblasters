@@ -290,6 +290,15 @@ class ButtonManager:
     def touch_gesture(self):
         return self._touch.gesture if self._touch else None
 
+    @property
+    def touch_down(self):
+        """True while a finger is currently on the glass. Live press-state,
+        unlike TOUCH_TAP (queue event, fires only on release and is dropped
+        entirely on a long hold or excess travel) — lets a caller poll for
+        a hit the instant a touch lands, instead of waiting for a clean
+        lift."""
+        return self._touch._touch_down if self._touch else False
+
     def hit_test(self, x: int, y: int, rect: tuple) -> bool:
         rx, ry, rw, rh = rect
         return rx <= x < rx + rw and ry <= y < ry + rh
