@@ -81,13 +81,10 @@ def _scale_volume(buf: ptr8, n_bytes: int, vol_q8: int):
         i += 2
 
 
-def _synth_tone(freq, duration_ms, volume=0.4, sample_rate=22050):
-    n   = int(sample_rate * duration_ms / 1000)
-    buf = bytearray(n * 2)
-    for i in range(n):
-        s = int(32767 * volume * math.sin(2 * math.pi * freq * i / sample_rate))
-        struct.pack_into('<h', buf, i * 2, s)
-    return buf
+# Largest buffer any _SYNTH_MAP entry can ever need (game_over.wav, 400ms
+# @ 22050Hz) -- see AudioManager._synth_buf below for why this is
+# pre-sized rather than left to grow lazily.
+_MAX_SYNTH_MS = max(dur for _, dur, _ in _SYNTH_MAP.values())
 
 
 class AudioManager:
@@ -107,7 +104,33 @@ class AudioManager:
                                       # call, a repeating uncached allocation
                                       # that contributed to a confirmed
                                       # on-hardware MemoryError)
+        # Synth-tone scratch buffer, pre-sized to the biggest _SYNTH_MAP
+        # entry and allocated NOW (AudioManager() is constructed as an
+        # import-time side effect, on the freshest heap this app ever
+        # sees) instead of lazily inside _synth_tone() -- that used to
+        # bytearray() a fresh buffer every call (never cached, unlike
+        # _read_buf above), and confirmed on hardware to MemoryError right
+        # after Star Bonk's end screen: announce_round_complete() plays
+        # "well_done.wav"/"new_high_score.wav" via this synth fallback
+        # (neither has a baked audio file), landing exactly when the heap
+        # is most fragmented from that screen's tile/result paints.
+        self._synth_buf = bytearray(
+            int(config.AUDIO_SAMPLE_RATE * _MAX_SYNTH_MS / 1000) * 2)
         self._init_hardware()
+
+    def _synth_tone(self, freq, duration_ms, volume=0.4, sample_rate=22050):
+        n    = int(sample_rate * duration_ms / 1000)
+        need = n * 2
+        if len(self._synth_buf) < need:
+            self._synth_buf = bytearray(need)   # play_tone() with a longer
+                                                  # duration than any _SYNTH_MAP
+                                                  # entry — not pre-warmed, but
+                                                  # still cached from here on
+        buf = self._synth_buf
+        for i in range(n):
+            s = int(32767 * volume * math.sin(2 * math.pi * freq * i / sample_rate))
+            struct.pack_into('<h', buf, i * 2, s)
+        return memoryview(buf)[:need]
 
     def _init_hardware(self):
         if (config.PIN_I2S_BCLK is None or
@@ -306,11 +329,11 @@ class AudioManager:
             f.close()
 
     async def _play_synth(self, freq: int, duration_ms: int, volume: float = 0.4):
-        buf = _synth_tone(freq, duration_ms,
-                        volume * self._volume, config.AUDIO_SAMPLE_RATE)
+        mv = self._synth_tone(freq, duration_ms,
+                              volume * self._volume, config.AUDIO_SAMPLE_RATE)
         self._i2s = self._make_i2s()
         try:
-            await self._stream(memoryview(buf), len(buf))
+            await self._stream(mv, len(mv))
         finally:
             self._i2s.deinit()
             self._i2s = None
