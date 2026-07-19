@@ -16,6 +16,7 @@
 
 import asyncio
 import random
+import config
 
 
 def shuffle(lst):
@@ -175,12 +176,26 @@ class BaseGame:
                                        f"Score: {self.score}")
         await asyncio.sleep_ms(2000)
 
+    # Custom draw, not display.show_splash() — that helper's scale is fixed
+    # (title=2) and shared by every splash call site in the app; bumping it
+    # there would resize every other splash too. The countdown wants each
+    # number (and GO!) to fill most of the screen.
+    _COUNTDOWN_SCALE = 10
+
+    async def _show_countdown_text(self, text, bg_color):
+        s = self._COUNTDOWN_SCALE
+        await self.display.fill_main(bg_color)
+        cx = config.MAIN_W // 2 - len(text) * 4 * s
+        cy = config.MAIN_H // 2 - 4 * s
+        await self.display.text_main(text, cx, cy, color=0xFFFF,
+                                     bg=bg_color, scale=s)
+
     async def countdown(self, from_n: int = 3):
         for n in range(from_n, 0, -1):
-            await self.display.show_splash(str(n), bg_color=0x18C3)
+            await self._show_countdown_text(str(n), 0x18C3)
             await self.audio.play_sfx(f"count_{n}.wav")
             await asyncio.sleep_ms(800)
-        await self.display.show_splash("GO!", bg_color=0x0320)
+        await self._show_countdown_text("GO!", 0x0320)
         await self.audio.play_sfx("go.wav")
         await asyncio.sleep_ms(500)
 
