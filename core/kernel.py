@@ -52,6 +52,18 @@ class AppKernel:
         # 1. Displays
         display.init_all()
 
+        # 1a-pre. Pre-warm the ILI9488's own full-width blit scratch buffer
+        # (23,040B) BEFORE anything else claims heap. Confirmed on hardware
+        # to be the most fragile allocation of all: it's used by the boot
+        # splash paint below (the very first main-screen draw of every
+        # session), and once the strip pool + Bonk scratch arena reservations
+        # (added for a DIFFERENT fix) landed ahead of it, this one started
+        # failing despite 130KB+ still free — pure fragmentation. See
+        # ILI9488.warm_blit_scratch() in drivers/display.py for the full
+        # story. Goes first because it's now the most fragile, not because
+        # it's the biggest.
+        display.main.warm_blit_scratch()
+
         # 1a. Seat the main-screen strip buffer pool FIRST, on the freshest
         # heap of all — before even flash_assets.init() below. Confirmed on
         # hardware: this pool's per-game-session seat/free cycle (via

@@ -51,6 +51,27 @@ class ILI9488:
         # caused MemoryError from heap fragmentation on the first round.
         self._blit_scratch = None
 
+    def warm_blit_scratch(self):
+        """Pre-allocate _blit_scratch NOW, at the largest size a full-width
+        main-screen blit will ever need (BAND_ROWS=16 rows x self.w x 3
+        bytes RGB666 -- matches blit_rgb565 below), instead of letting it
+        allocate lazily on first use. Same "freshest heap" argument as
+        core/display_manager.py's warm_text_scratch()/flash_assets.init().
+        Confirmed on hardware: the first-ever caller of this scratch buffer
+        is the BOOT SPLASH itself (core/kernel.py's paint_main_bg(_BOOT_BG)
+        call), and once enough OTHER boot-time reservations (persistent
+        strip pool + Bonk's scratch arena) landed ahead of it, this 23,040B
+        request started failing despite 130KB+ still free overall — pure
+        fragmentation, the same class of failure as everywhere else in this
+        codebase. Call this FIRST, before any other boot-time reservation,
+        since it's now the most fragile one of all."""
+        band_bytes = self.w * 16 * 3   # BAND_ROWS=16, must match blit_rgb565
+        if self._blit_scratch is None or len(self._blit_scratch) < band_bytes:
+            import gc
+            gc.collect()
+            print(f"[display] warm blit scratch {band_bytes}B  free={gc.mem_free()}")
+            self._blit_scratch = bytearray(band_bytes)
+
     def init_blocking(self):
         _pulse_reset(self._rst)
         self._run_init()
