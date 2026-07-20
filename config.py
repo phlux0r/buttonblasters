@@ -43,7 +43,7 @@ PIN_MISO         = 4     # ✓ verified
 #      wiring); the ST7789s tolerate more (~62 MHz).
 #   NOTE: actual bus rate is quantised — the RP2350 divides sysclk down, so
 #   raising MACHINE_FREQ above gives finer/higher available rates.
-SPI_FREQ_DISPLAY = 48_000_000    # starting step — tune upward per notes above
+SPI_FREQ_DISPLAY = 40_000_000    # starting step — tune upward per notes above
 
 # SD stays slow and decoupled from the display clock — the shared bus
 # switches frequency per-device (see drivers/spi_bus.py), so a fast display
