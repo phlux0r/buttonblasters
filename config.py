@@ -3,12 +3,49 @@
 # All values confirmed through hardware bring-up tests 1-11.
 # Do not change pin assignments without re-running bring-up tests.
 
+# ── Core clock ───────────────────────────────────────────────────
+# RP2350 default is 150 MHz. Raising it speeds the viper RGB565→666
+# conversion AND gives the SPI peripheral higher/finer available bus
+# rates (SPI baud is derived by dividing sysclk).
+#
+# ── HOW TO TUNE ──────────────────────────────────────────────────
+#   Default (no overclock):  150_000_000
+#   Safe overclock steps:    200_000_000  → 250_000_000  → 300_000_000
+#   Applied once at boot in main.py. If the board gets flaky (hangs on
+#   boot, USB/REPL drops, random resets), step back down. 200 MHz is a
+#   very safe starting overclock for the RP2350. Tune this and
+#   SPI_FREQ_DISPLAY independently — change one at a time so you know
+#   which one caused any regression.
+MACHINE_FREQ     = 200_000_000
+
 # ── SPI bus (SPI0) ───────────────────────────────────────────────
 SPI_ID           = 0
 PIN_SCK          = 18    # ✓ verified — only valid SCK for SPI0
 PIN_MOSI         = 19    # ✓ verified — only valid MOSI for SPI0
 PIN_MISO         = 4     # ✓ verified
-SPI_FREQ_DISPLAY = 10_000_000
+# Display bus speed. Was 10 MHz (very conservative). The panels can go
+# much faster — raising this is the single biggest draw-speed win, since
+# every fill/blit funnels through this one bus.
+#
+# ── HOW TO TUNE (on the bench, one step at a time) ───────────────────
+#   1. Flash with the current value, then watch ALL FIVE screens during a
+#      menu→game transition and a shape blit.
+#   2. If everything is clean (no garbled pixels, no flicker, no dropouts),
+#      bump to the next step and re-flash:
+#         24_000_000  → 32_000_000  → 40_000_000  → 48_000_000
+#   3. The FIRST value that shows ANY corruption is too high — drop back to
+#      the previous clean step and stop there. That's your ceiling.
+#   4. Ceiling depends on wiring quality: short/soldered leads tolerate more
+#      than long breadboard jumpers. ILI9488 is the limiting panel
+#      (~40 MHz typical); the ST7789s tolerate more (~62 MHz).
+#   NOTE: actual bus rate is quantised — the RP2350 divides sysclk down, so
+#   the SPI peripheral picks the highest divisor <= your request. Raising
+#   MACHINE_FREQ in main.py gives finer/higher available rates.
+SPI_FREQ_DISPLAY = 24_000_000    # starting step — tune upward per notes above
+
+# SD card stays at 10 MHz — cards are far pickier than the display panels
+# about bus speed, so do NOT couple it to SPI_FREQ_DISPLAY. Leave it here
+# even as you raise the display clock.
 SPI_FREQ_SD_INIT =    400_000
 SPI_FREQ_SD_DATA = 10_000_000
 
