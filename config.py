@@ -16,7 +16,7 @@
 #   very safe starting overclock for the RP2350. Tune this and
 #   SPI_FREQ_DISPLAY independently — change one at a time so you know
 #   which one caused any regression.
-MACHINE_FREQ     = 200_000_000
+MACHINE_FREQ     = 250_000_000
 
 # ── SPI bus (SPI0) ───────────────────────────────────────────────
 SPI_ID           = 0
@@ -43,7 +43,7 @@ PIN_MISO         = 4     # ✓ verified
 #      wiring); the ST7789s tolerate more (~62 MHz).
 #   NOTE: actual bus rate is quantised — the RP2350 divides sysclk down, so
 #   raising MACHINE_FREQ above gives finer/higher available rates.
-SPI_FREQ_DISPLAY = 24_000_000    # starting step — tune upward per notes above
+SPI_FREQ_DISPLAY = 48_000_000    # starting step — tune upward per notes above
 
 # SD stays slow and decoupled from the display clock — the shared bus
 # switches frequency per-device (see drivers/spi_bus.py), so a fast display
