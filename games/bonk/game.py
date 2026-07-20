@@ -383,7 +383,9 @@ class StarBonkGame(BaseGame):
         except Exception:
             pass
         try:
-            self._adapter.close()   # releases the 150KB pool, restores freq
+            self._adapter.close()   # detaches from the shared strip pool
+                                     # (persistent now, not freed here),
+                                     # restores display freq
         except Exception:
             pass
         flash_assets.arena.reset()

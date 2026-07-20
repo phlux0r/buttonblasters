@@ -52,6 +52,23 @@ class AppKernel:
         # 1. Displays
         display.init_all()
 
+        # 1a. Seat the main-screen strip buffer pool FIRST, on the freshest
+        # heap of all — before even flash_assets.init() below. Confirmed on
+        # hardware: this pool's per-game-session seat/free cycle (via
+        # MainScreenAdapter.open()/close()) fragmented the heap badly enough
+        # that STRIP_H shrank 32→16→8 across three separate confirmed
+        # failures, and STILL failed at 8 ("did not seat... Heap too
+        # fragmented") after the menu + game_cache.install() had run first.
+        # This pool does FOUR separate smaller allocations (not one bump
+        # carve like flash_assets.arena), so it's the most placement-
+        # sensitive of everything seated at boot — same "acquire hardest-
+        # first" rule already applied inside games/bonk/game.py's load(),
+        # just extended to the whole boot sequence. Persistent for the
+        # whole power-on session now (see core/sprite_adapter.py's
+        # seat_shared_pool() / _shared_pool) — never freed until reset.
+        from core.sprite_adapter import seat_shared_pool
+        seat_shared_pool()
+
         # 1b. Seat the flash-asset sprite arena on the FRESHEST heap — before
         # any subsystem (touch/audio/LEDs/SD) churns it, and before the boot
         # card paints (paint_main_bg borrows the arena). One 96KB alloc.
