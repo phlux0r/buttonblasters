@@ -139,7 +139,20 @@ PIN_I2S_LRC       = 1    # ✓ confirmed GP1
 PIN_I2S_DIN       = 16   # ✓ confirmed GP16
 AUDIO_SAMPLE_RATE = 22050
 AUDIO_BITS        = 16
-AUDIO_BUF_BYTES   = 4096
+# Was 4096. Confirmed on hardware: machine.I2S(..., ibuf=AUDIO_BUF_BYTES)
+# appears to internally double-buffer its DMA ring -- every I2S playback
+# allocation fails at exactly 2x this value (8192B at 4096), not the
+# configured size itself. I2S is deliberately torn down and rebuilt fresh
+# for every single clip (MAX98357A auto-mute behavior, see drivers/audio.py),
+# so this allocation happens on EVERY sound, not just once. Halved to 2048
+# (this failure's already-documented "next lever" — see HARDWARE_NOTES.md's
+# third and eleventh confirmed hardware failures) rather than adding yet
+# another permanent boot-time reservation, since several of those already
+# stacked up this session and each one shrinks the elastic heap available
+# to allocations like this one. No other production consumer of this
+# constant besides drivers/audio.py (confirmed via grep — only two test
+# scripts also reference it).
+AUDIO_BUF_BYTES   = 2048
 
 # ── WS2812B LEDs ✓ confirmed ─────────────────────────────────────
 # Data via 74AHCT125 level shifter (3.3V → 5V).
