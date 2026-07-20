@@ -150,23 +150,38 @@ BACK_TILE_PATH   = "/assets/menu/btn_back_300x240.bz"        # shared across gam
 # once -- legend icons are only read during round play, end-screen tiles
 # only after a round-set finishes.
 #
-# Lazily seated on first load() (NOT at boot -- tried that, reverted it;
-# see HARDWARE_NOTES.md's twelfth confirmed hardware failure). Boot-time
-# seating briefly fixed a fragmentation failure at load() time, but by
-# then ~193KB was already permanently committed to OTHER boot-time
-# reservations (blit scratch, the persistent strip pool, flash_assets.arena,
-# text scratch), and this arena's own 32KB request became the allocation
-# that finally broke BOOT ITSELF -- worse than the bug it was fixing, since
-# that blocks every game, not just Bonk. Reverted to lazy seating here in
-# load(); only this call site invokes seat_scratch_arena() now.
+# Seated at BOOT again, but FIRST among the boot-time reservations this
+# time (core/kernel.py calls seat_scratch_arena() before even the blit
+# scratch/strip pool/flash_assets.arena/text scratch). History, in order:
+#   1. Originally lazy-seated on first load() only.
+#   2. Moved to boot (seated LAST of five reservations) after lazy seating
+#      failed even on a session's first Bonk load -- fixed that.
+#   3. That broke BOOT ITSELF: by the time this ran last, ~193KB was
+#      already committed to the other four reservations, and this arena's
+#      32KB request couldn't fit anywhere -- worse than the bug it fixed,
+#      since a boot failure blocks every game, not just Bonk. Reverted to
+#      lazy seating at load() again.
+#   4. Lazy seating failed AGAIN on real hardware, repeatedly, after
+#      playing Match first: free heap RISING each retry (56208 -> 110816
+#      -> 124528) while the exact same 32768-byte request kept failing
+#      regardless -- proof of permanent fragmentation (the other boot-
+#      seated blocks act as fixed, non-moving walls a non-compacting GC
+#      can't route around), not a shortage no amount of gc.collect()
+#      elsewhere could ever fix.
+#   5. Back to boot-time seating, but reordered FIRST instead of last, so
+#      it claims its 32KB on the most virgin heap available, before the
+#      larger reservations get a chance to wall it in. See the ordering
+#      comment in core/kernel.py's init() for what to watch if this also
+#      fails (whether flash_assets.init()'s 96KB block starts failing
+#      instead would mean total capacity, not ordering, is the real limit).
 _scratch_arena = None
 
 
 def seat_scratch_arena():
-    """Seat _scratch_arena once. Called from load() below (lazily, on
-    first Bonk load of a session) -- NOT from core/kernel.py at boot; see
-    the module comment above for why that was reverted. Idempotent -- a
-    no-op if already seated."""
+    """Seat _scratch_arena once. Called from core/kernel.py at boot, FIRST
+    among the boot-time heap reservations -- see the module comment above
+    for the full back-and-forth on why. load() below also calls this as a
+    defensive fallback. Idempotent -- a no-op if already seated."""
     global _scratch_arena
     if _scratch_arena is None:
         _scratch_arena = flash_assets.SpriteArena(32 * 1024)

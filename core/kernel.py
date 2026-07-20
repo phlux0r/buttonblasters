@@ -53,6 +53,32 @@ class AppKernel:
         # 1. Displays
         display.init_all()
 
+        # 1a-pre0. Seat Bonk's scratch arena FIRST of everything, before
+        # even the blit scratch below. History: this WAS boot-seated, but
+        # positioned LAST among five boot reservations — failed there
+        # ("blew the boot budget", see games.bonk.game._scratch_arena's
+        # comment), so it got reverted to lazy seating at load() time
+        # instead. Lazy seating then ALSO failed, repeatedly, on real
+        # hardware after playing Match first: three retries showed free
+        # heap RISING each time (56208 -> 110816 -> 124528) while the exact
+        # same 32768-byte request kept failing regardless — proof this
+        # isn't a shortage, it's permanent fragmentation from the OTHER
+        # boot-seated blocks (persistent strip pool, flash_assets.arena,
+        # text scratch) acting as fixed, non-moving walls (MicroPython's GC
+        # doesn't compact) that happen to leave no single gap >= 32KB, no
+        # matter how much unrelated garbage gets collected. So: back to
+        # boot-time seating, but FIRST this time instead of last, so it
+        # claims its 32KB while the heap is most virgin, before the larger
+        # reservations below get a chance to wall it in. If flash_assets.init()
+        # (96KB, the single biggest block) fails after this reorder, that's
+        # the checkpoint print to watch — it would mean total capacity, not
+        # ordering, is the real ceiling, and the next lever would be
+        # shrinking something's SIZE (SPRITE_BUDGET or STRIP_H), not
+        # reordering further.
+        from games.bonk.game import seat_scratch_arena
+        seat_scratch_arena()
+        print(f"[kernel] heap after bonk scratch arena: free={gc.mem_free()}")
+
         # 1a-pre. Pre-warm the ILI9488's own full-width blit scratch buffer
         # (23,040B) BEFORE anything else claims heap. Confirmed on hardware
         # to be the most fragile allocation of all: it's used by the boot
@@ -97,24 +123,6 @@ class AppKernel:
         # on hardware to MemoryError there otherwise.
         warm_text_scratch()
         print(f"[kernel] heap after text scratch: free={gc.mem_free()}")
-
-        # 1d. REVERTED — do NOT seat Bonk's scratch arena here. It WAS boot-
-        # seated (see games.bonk.game._scratch_arena's history), but
-        # confirmed on hardware to blow the boot budget entirely: by this
-        # point in the sequence ~193KB is already permanently committed
-        # (blit scratch 23KB + strip pool 38.4KB + flash-asset arena 96KB +
-        # text scratch 38.4KB), and this arena's own 32KB request was the
-        # straw that broke it — MemoryError right here in kernel.init(),
-        # meaning the app couldn't boot AT ALL, for every game, not just
-        # Bonk. That's strictly worse than the bug this was fixing (Bonk
-        # occasionally failing to load). Reverted to load()-time lazy
-        # seating (games/bonk/game.py's load() still calls
-        # seat_scratch_arena() itself as its own first step) — the original
-        # pre-eighth-fix behavior. If Bonk's load() fails again from this,
-        # that's recoverable (menu still works); a boot failure is not.
-        # Don't re-add this here without real gc.mem_free() numbers from
-        # the checkpoints above — this session had already run out of
-        # informed guesses when this failure hit.
 
         # Boot splash — baked card if present, else the text splash.
         if not await display.paint_main_bg(_BOOT_BG):
