@@ -13,6 +13,7 @@
 #   9. Startup effects + menu
 
 import asyncio
+import gc
 import json
 import time
 
@@ -63,6 +64,7 @@ class AppKernel:
         # story. Goes first because it's now the most fragile, not because
         # it's the biggest.
         display.main.warm_blit_scratch()
+        print(f"[kernel] heap after blit scratch: free={gc.mem_free()}")
 
         # 1a. Seat the main-screen strip buffer pool FIRST, on the freshest
         # heap of all — before even flash_assets.init() below. Confirmed on
@@ -80,11 +82,13 @@ class AppKernel:
         # seat_shared_pool() / _shared_pool) — never freed until reset.
         from core.sprite_adapter import seat_shared_pool
         seat_shared_pool()
+        print(f"[kernel] heap after strip pool: free={gc.mem_free()}")
 
         # 1b. Seat the flash-asset sprite arena on the FRESHEST heap — before
         # any subsystem (touch/audio/LEDs/SD) churns it, and before the boot
         # card paints (paint_main_bg borrows the arena). One 96KB alloc.
         flash_assets.init()
+        print(f"[kernel] heap after flash_assets arena: free={gc.mem_free()}")
 
         # 1c. Same argument, same freshest-heap moment: pre-grow the shared
         # text-scratch buffers to the largest size any game will ever ask
@@ -92,18 +96,25 @@ class AppKernel:
         # that grow happen lazily mid-game on a fragmented heap — confirmed
         # on hardware to MemoryError there otherwise.
         warm_text_scratch()
+        print(f"[kernel] heap after text scratch: free={gc.mem_free()}")
 
-        # 1d. Same freshest-heap argument again: seat Bonk's button-legend/
-        # end-screen scratch arena (32KB) here instead of lazily on first
-        # Bonk load(). Confirmed on hardware: lazy seating could fail even
-        # on the FIRST load of a session once the menu + game_cache.install()
-        # had already claimed/fragmented enough heap — see the comment on
-        # games.bonk.game._scratch_arena for the full history. Import is
-        # local (not top-of-file) so a future game that isn't Bonk doesn't
-        # need this kernel to know about games/bonk/game.py by name — this
-        # one call is the sole coupling point.
-        from games.bonk.game import seat_scratch_arena
-        seat_scratch_arena()
+        # 1d. REVERTED — do NOT seat Bonk's scratch arena here. It WAS boot-
+        # seated (see games.bonk.game._scratch_arena's history), but
+        # confirmed on hardware to blow the boot budget entirely: by this
+        # point in the sequence ~193KB is already permanently committed
+        # (blit scratch 23KB + strip pool 38.4KB + flash-asset arena 96KB +
+        # text scratch 38.4KB), and this arena's own 32KB request was the
+        # straw that broke it — MemoryError right here in kernel.init(),
+        # meaning the app couldn't boot AT ALL, for every game, not just
+        # Bonk. That's strictly worse than the bug this was fixing (Bonk
+        # occasionally failing to load). Reverted to load()-time lazy
+        # seating (games/bonk/game.py's load() still calls
+        # seat_scratch_arena() itself as its own first step) — the original
+        # pre-eighth-fix behavior. If Bonk's load() fails again from this,
+        # that's recoverable (menu still works); a boot failure is not.
+        # Don't re-add this here without real gc.mem_free() numbers from
+        # the checkpoints above — this session had already run out of
+        # informed guesses when this failure hit.
 
         # Boot splash — baked card if present, else the text splash.
         if not await display.paint_main_bg(_BOOT_BG):
@@ -191,6 +202,8 @@ class AppKernel:
                 leds.start_effect(leds.chase(100, 200, 100))
             await game_cache.install(game.GAME_ID)      # Tier B — SD → littlefs
             audio.set_game(game.GAME_ID)                # game's Tier B audio dir
+            print(f"[kernel] heap before {game.GAME_ID}.load(): "
+                  f"free={gc.mem_free()}")
             try:
                 await game.load()
             except Exception as e:

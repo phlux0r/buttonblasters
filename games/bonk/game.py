@@ -150,21 +150,23 @@ BACK_TILE_PATH   = "/assets/menu/btn_back_300x240.bz"        # shared across gam
 # once -- legend icons are only read during round play, end-screen tiles
 # only after a round-set finishes.
 #
-# Seated at BOOT (core/kernel.py calls seat_scratch_arena() right after
-# flash_assets.init()/warm_text_scratch() -- same "freshest heap" step),
-# not lazily on first load() as before. Confirmed on hardware: lazy seating
-# was failing even on the FIRST Bonk load of a session, not just repeat
-# plays -- by the time load() ran, the menu and game_cache.install() had
-# already claimed/fragmented enough heap that a fresh 32KB contiguous claim
-# couldn't always land. Boot-time seating (before ANY of that churn exists)
-# is the same fix already proven for flash_assets.arena and
-# warm_text_scratch() -- see their call sites in core/kernel.py.
+# Lazily seated on first load() (NOT at boot -- tried that, reverted it;
+# see HARDWARE_NOTES.md's twelfth confirmed hardware failure). Boot-time
+# seating briefly fixed a fragmentation failure at load() time, but by
+# then ~193KB was already permanently committed to OTHER boot-time
+# reservations (blit scratch, the persistent strip pool, flash_assets.arena,
+# text scratch), and this arena's own 32KB request became the allocation
+# that finally broke BOOT ITSELF -- worse than the bug it was fixing, since
+# that blocks every game, not just Bonk. Reverted to lazy seating here in
+# load(); only this call site invokes seat_scratch_arena() now.
 _scratch_arena = None
 
 
 def seat_scratch_arena():
-    """Seat _scratch_arena once, called from core/kernel.py at boot on the
-    freshest heap. Idempotent -- a no-op if already seated."""
+    """Seat _scratch_arena once. Called from load() below (lazily, on
+    first Bonk load of a session) -- NOT from core/kernel.py at boot; see
+    the module comment above for why that was reverted. Idempotent -- a
+    no-op if already seated."""
     global _scratch_arena
     if _scratch_arena is None:
         _scratch_arena = flash_assets.SpriteArena(32 * 1024)
@@ -282,10 +284,11 @@ class StarBonkGame(BaseGame):
         # Small SEPARATE arena for the button-legend icons AND the
         # end-screen tile/result paints (BE, opaque) — kept apart from the
         # global arena because that one holds the LE sprites for the whole
-        # game and arena.reset() is all-or-nothing. Seated at BOOT now (see
-        # module-level _scratch_arena comment + seat_scratch_arena()) —
-        # this call is just a defensive fallback in case boot seating was
-        # somehow skipped; the normal path only rewinds the bump pointer.
+        # game and arena.reset() is all-or-nothing. Lazily seated HERE (see
+        # module-level _scratch_arena comment for why boot-time seating was
+        # tried and reverted) — only the FIRST Bonk load of a session
+        # actually allocates; every load after that just rewinds the
+        # existing arena's bump pointer via .reset().
         global _scratch_arena
         seat_scratch_arena()
         _scratch_arena.reset()
