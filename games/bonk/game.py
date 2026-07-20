@@ -149,7 +149,25 @@ BACK_TILE_PATH   = "/assets/menu/btn_back_300x240.bz"        # shared across gam
 # BE = 18,432B; RESULT_PATH's 480-wide strip = 30,720B), never both at
 # once -- legend icons are only read during round play, end-screen tiles
 # only after a round-set finishes.
+#
+# Seated at BOOT (core/kernel.py calls seat_scratch_arena() right after
+# flash_assets.init()/warm_text_scratch() -- same "freshest heap" step),
+# not lazily on first load() as before. Confirmed on hardware: lazy seating
+# was failing even on the FIRST Bonk load of a session, not just repeat
+# plays -- by the time load() ran, the menu and game_cache.install() had
+# already claimed/fragmented enough heap that a fresh 32KB contiguous claim
+# couldn't always land. Boot-time seating (before ANY of that churn exists)
+# is the same fix already proven for flash_assets.arena and
+# warm_text_scratch() -- see their call sites in core/kernel.py.
 _scratch_arena = None
+
+
+def seat_scratch_arena():
+    """Seat _scratch_arena once, called from core/kernel.py at boot on the
+    freshest heap. Idempotent -- a no-op if already seated."""
+    global _scratch_arena
+    if _scratch_arena is None:
+        _scratch_arena = flash_assets.SpriteArena(32 * 1024)
 
 
 def _main_asset_path(name):
@@ -264,16 +282,13 @@ class StarBonkGame(BaseGame):
         # Small SEPARATE arena for the button-legend icons AND the
         # end-screen tile/result paints (BE, opaque) — kept apart from the
         # global arena because that one holds the LE sprites for the whole
-        # game and arena.reset() is all-or-nothing. Persistent (see
-        # module-level _scratch_arena comment above): only the FIRST Bonk
-        # load this power-on session actually allocates; every load after
-        # that just rewinds the existing arena's bump pointer, so it can't
-        # refragment the heap on replay.
+        # game and arena.reset() is all-or-nothing. Seated at BOOT now (see
+        # module-level _scratch_arena comment + seat_scratch_arena()) —
+        # this call is just a defensive fallback in case boot seating was
+        # somehow skipped; the normal path only rewinds the bump pointer.
         global _scratch_arena
-        if _scratch_arena is None:
-            _scratch_arena = flash_assets.SpriteArena(32 * 1024)
-        else:
-            _scratch_arena.reset()
+        seat_scratch_arena()
+        _scratch_arena.reset()
         self._scratch_arena = _scratch_arena
 
         try:

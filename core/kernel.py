@@ -64,6 +64,18 @@ class AppKernel:
         # on hardware to MemoryError there otherwise.
         warm_text_scratch()
 
+        # 1d. Same freshest-heap argument again: seat Bonk's button-legend/
+        # end-screen scratch arena (32KB) here instead of lazily on first
+        # Bonk load(). Confirmed on hardware: lazy seating could fail even
+        # on the FIRST load of a session once the menu + game_cache.install()
+        # had already claimed/fragmented enough heap — see the comment on
+        # games.bonk.game._scratch_arena for the full history. Import is
+        # local (not top-of-file) so a future game that isn't Bonk doesn't
+        # need this kernel to know about games/bonk/game.py by name — this
+        # one call is the sole coupling point.
+        from games.bonk.game import seat_scratch_arena
+        seat_scratch_arena()
+
         # Boot splash — baked card if present, else the text splash.
         if not await display.paint_main_bg(_BOOT_BG):
             await display.show_splash("BUTTON", "BLASTERS",
