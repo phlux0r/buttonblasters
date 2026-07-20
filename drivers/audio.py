@@ -38,6 +38,7 @@
 # reintroducing bus-locking here.
 
 import asyncio
+import gc
 import struct
 import math
 import micropython
@@ -156,6 +157,19 @@ class AudioManager:
             print(f"[audio] I2S init failed: {e}")
 
     def _make_i2s(self):
+        # gc.collect() right before construction: confirmed on hardware that
+        # machine.I2S's actual internal allocation does NOT scale down with
+        # a smaller config.AUDIO_BUF_BYTES the way HARDWARE_NOTES.md's third
+        # failure entry guessed -- halving AUDIO_BUF_BYTES 4096->2048 (the
+        # eleventh fix) still failed at the exact same 8192 bytes, not the
+        # predicted 4096, meaning 8192 is very likely a FIXED floor inside
+        # the driver, not "2x whatever ibuf you pass". I2S is deliberately
+        # rebuilt fresh for every single clip played (MAX98357A auto-mute
+        # behavior — see module docstring), so this allocation happens on
+        # every sound. Defragging right here, same "gc.collect() then
+        # allocate hardest-first" pattern StripBufferPool already uses,
+        # maximizes the odds this fixed-size ask finds a contiguous home.
+        gc.collect()
         from machine import I2S, Pin
         i2s = I2S(
             0,
@@ -278,7 +292,25 @@ class AudioManager:
                 evt.clear()
                 self._drain_evt = evt
                 self._i2s.write(mv[offset:end])
-                await evt.wait()
+                # Bounded wait: at AUDIO_BUF_BYTES=2048/22050Hz mono 16-bit,
+                # a chunk drains in ~46ms under normal playback, so 1000ms
+                # is generous margin, not a tight deadline. This used to be
+                # an unbounded `await evt.wait()` -- if the I2S drain IRQ
+                # ever doesn't fire (missed/dropped interrupt, hardware
+                # hiccup), that hung this coroutine FOREVER with zero
+                # console output, and since play_sfx/play_voice(wait=True)
+                # awaits this task, it silently froze the whole game loop
+                # until a manual interrupt (suspected root cause of Bonk's
+                # end-screen never appearing, no error before a forced
+                # Ctrl-C — see HARDWARE_NOTES.md). _guard() already catches
+                # and logs whatever this raises, so timing out here recovers
+                # (clip cuts short, one printed diagnostic) instead of
+                # hanging forever.
+                try:
+                    await asyncio.wait_for(evt.wait(), 1.0)
+                except asyncio.TimeoutError:
+                    print("[audio] I2S drain timeout — clip cut short")
+                    break
                 offset = end
         finally:
             if self._drain_evt is evt:
