@@ -476,6 +476,14 @@ class StarBonkGame(BaseGame):
         if not live_pool:
             return True   # nothing loadable for this round — skip the slot
 
+        # Randomised pre-spawn delay (0-1500ms) so targets don't appear in
+        # an instant, metronomic back-to-back rhythm -- some anticipation,
+        # not just random position/type. Range deliberately does NOT scale
+        # with the difficulty ramp (_current_ttl) so the two unpredictability
+        # sources don't compound into something too frantic by round 3.
+        if not await self._wait_before_spawn(random.randint(0, 1500)):
+            return False   # quit during the delay
+
         name  = random.choice(live_pool)
         sheet = self._sheets[name]
         x = random.randint(0, config.MAIN_W - ICON)
@@ -497,6 +505,29 @@ class StarBonkGame(BaseGame):
             self.score += TARGET_POINTS[name]
             await self._bonk_feedback()
         return True
+
+    async def _wait_before_spawn(self, delay_ms) -> bool:
+        """Idle for delay_ms before the next spawn, staying responsive to
+        BACK/HOME so a kid mashing it doesn't have to wait out the delay
+        first. Returns False only on quit — same convention as
+        _wait_hit_or_timeout below."""
+        if delay_ms <= 0:
+            return True
+        self.buttons.clear()
+        deadline_ms = time.ticks_add(time.ticks_ms(), delay_ms)
+        while True:
+            if time.ticks_diff(deadline_ms, time.ticks_ms()) <= 0:
+                return True
+            try:
+                btn, evt = self.buttons._queue.get_nowait()
+            except Exception:
+                await asyncio.sleep_ms(15)
+                continue
+            if btn == 4 and evt == "press":
+                self.quit()
+                return False
+            # Other events (stray touch, screen buttons) are just drained —
+            # nothing to hit yet during this delay.
 
     async def _wait_hit_or_timeout(self, x, y, deadline_ms):
         self.buttons.clear()
