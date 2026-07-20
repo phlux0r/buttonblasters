@@ -72,12 +72,14 @@ def warm_text_scratch():
     (call at boot, right after flash_assets.init(), same freshest-heap
     argument as that arena), instead of growing lazily the first time some
     game asks for it. Confirmed on hardware: BaseGame.countdown()'s "GO!"
-    at scale=10 (dw=240, dh=80 -> 38,400B out buffer) is the single
-    biggest text draw in the app, and it was the first caller ever to
-    need a buffer that size -- which happened mid-Bonk-session, well
-    after load() had already seated the strip pool/legend arena/sprite
-    sheets, and failed with a bare MemoryError. Never touches a display."""
-    _render_text_be("GO!", WHITE, BLACK, 10, False)
+    at config.COUNTDOWN_TEXT_SCALE is the single biggest text draw in the
+    app, and it was the first caller ever to need a buffer that size --
+    which happened mid-Bonk-session, well after load() had already seated
+    the strip pool/legend arena/sprite sheets, and failed with a bare
+    MemoryError. Scale MUST match core/game_base.py's actual render (both
+    read config.COUNTDOWN_TEXT_SCALE — see that config entry) or this
+    pre-warm doesn't cover the real draw. Never touches a display."""
+    _render_text_be("GO!", WHITE, BLACK, config.COUNTDOWN_TEXT_SCALE, False)
 
 
 @micropython.viper

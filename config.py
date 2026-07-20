@@ -184,6 +184,25 @@ MENU_SCROLL_MS     = 120
 GAME_RETURN_IDLE_S = 60
 SCREEN_DIM_S       = 120
 
+# ── Countdown text scale ─────────────────────────────────────────
+# Was 10 (core/game_base.py's "3-2-1-GO!" countdown). Single source of
+# truth shared by core/game_base.py (actual render) and
+# core/display_manager.py's warm_text_scratch() (boot-time pre-warm) --
+# they used to be two independently hardcoded 10s in different files, an
+# easy way to silently desync. Confirmed on hardware: at scale=10, "GO!"'s
+# out buffer (dw=240, dh=80 -> 38,400B) was the single biggest text draw
+# in the app, and even after seating five other large boot-time
+# reservations totaling ~189KB, this one still failed with 150KB nominally
+# free (contiguous fragmentation, not a shortage -- see HARDWARE_NOTES.md's
+# thirteenth/fourteenth confirmed hardware failures). Dropped to 7
+# (out buffer -> 168x56x2 = 18,816B, roughly half) to reduce the single
+# largest contiguous ask in the whole boot sequence, rather than continue
+# reordering reservations that don't collectively fit regardless of order.
+# Still large/dramatic on a 480x320 screen -- just not the biggest
+# possible. Raise this again only after confirming real headroom via the
+# gc.mem_free() checkpoint prints in core/kernel.py's init().
+COUNTDOWN_TEXT_SCALE = 7
+
 # ══════════════════════════════════════════════════════════════════
 # CONFIRMED GPIO SUMMARY
 #  GP0   I2S BCLK → MAX98357A    GP1   I2S LRC → MAX98357A

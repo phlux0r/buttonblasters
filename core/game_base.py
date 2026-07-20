@@ -179,8 +179,12 @@ class BaseGame:
     # Custom draw, not display.show_splash() — that helper's scale is fixed
     # (title=2) and shared by every splash call site in the app; bumping it
     # there would resize every other splash too. The countdown wants each
-    # number (and GO!) to fill most of the screen.
-    _COUNTDOWN_SCALE = 10
+    # number (and GO!) to fill most of the screen. Value lives in
+    # config.COUNTDOWN_TEXT_SCALE — shared with
+    # core/display_manager.py's warm_text_scratch(), which pre-warms the
+    # buffer this size renders into. Change it there, not here, so the two
+    # can't silently desync (see that config entry for the RAM history).
+    _COUNTDOWN_SCALE = config.COUNTDOWN_TEXT_SCALE
 
     async def _show_countdown_text(self, text, bg_color):
         s = self._COUNTDOWN_SCALE
