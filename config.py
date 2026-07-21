@@ -183,11 +183,18 @@ HAPTIC_PULSE_MS = 60
 # board. See tests/test_16_battery_vsys.py and drivers/battery.py.
 PIN_BAT_ADC    = 29    # GP29 / ADC3 — VSYS monitor (see note above)
 PIN_WIFI_CS    = 25    # held HIGH before each battery read (see note above)
-# VSYS is divided by ~3 before reaching ADC3 — this is the widely
-# documented Pico-W-family divider ratio, NOT yet measured on this board.
-# Cross-check tests/test_16_battery_vsys.py's printed voltage against a
-# multimeter reading of the battery/VSYS rail before trusting this.
-VSYS_ADC_RATIO = 3
+# ✓ BENCH-CONFIRMED — the widely-documented Pico-W-family divider ratio
+# of 3 was WRONG for this board: tests/test_16_battery_vsys.py printed
+# 4.15V (raw≈27520) while a multimeter on the battery read 3.45V. Solving
+# for the actual ratio from that data point: 3.45 / (27520 * 3.3/65535)
+# ≈ 2.49. This is not a small correction — at BAT_FULL_V/BAT_EMPTY_V
+# below, the wrong ratio reported ~94% charge for a battery actually at
+# ~17%, right next to the BAT_WARN_PCT low-battery threshold. Calibrated
+# from a SINGLE data point (one voltage level) — if you get a chance to
+# check at a meaningfully different charge level (e.g. after a full
+# charge to ~4.2V), that would confirm linearity holds across the whole
+# range rather than just near 3.45V.
+VSYS_ADC_RATIO = 2.49
 BAT_FULL_V     = 4.2
 BAT_EMPTY_V    = 3.3
 BAT_WARN_PCT   = 15

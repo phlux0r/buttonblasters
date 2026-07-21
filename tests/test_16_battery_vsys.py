@@ -24,12 +24,13 @@
 #   3. GP25-high dance doesn't crash even though WLAN is never active here
 #   4. Percentage interpolation between BAT_EMPTY_V/BAT_FULL_V
 #
-# NOT YET BENCH-CONFIRMED: the /3 divider ratio below is the widely
-# documented Pico-W-family VSYS divider value, not something measured on
-# THIS board. Cross-check the printed voltage against a multimeter
-# reading of the actual battery/VSYS rail before trusting this for
-# anything user-facing — if it's off, the ratio (or ADC_VREF) is the
-# first thing to adjust, not the wiring.
+# ✓ BENCH-CONFIRMED — the widely-documented Pico-W-family divider of 3
+# was WRONG for this board: first run printed 4.15V (raw≈27520) while a
+# multimeter on the battery read 3.45V, ~94% vs ~17% charge — not a small
+# error. Real ratio, solved from that data point: ≈2.49. Calibrated from
+# ONE voltage level — a second check at a meaningfully different charge
+# level (e.g. after a full charge to ~4.2V) would confirm linearity holds
+# across the whole range, not just near 3.45V. See config.VSYS_ADC_RATIO.
 # ─────────────────────────────────────────────────────────────────
 
 import time
@@ -42,7 +43,7 @@ print("=" * 48)
 
 ADC_MAX   = 65535       # read_u16() full scale
 ADC_VREF  = 3.3         # RP2350 ADC reference voltage
-DIVIDER   = 3           # VSYS is divided by ~3 before reaching ADC3 — UNCONFIRMED on this board
+DIVIDER   = 2.49        # ✓ bench-confirmed on this board (was 3 — wrong, see header)
 
 BAT_FULL_V  = 4.2
 BAT_EMPTY_V = 3.3
@@ -83,9 +84,8 @@ except KeyboardInterrupt:
     pass
 
 print("\n" + "=" * 48)
-print("  TEST 16 complete.")
-print("  If the voltage reading is off vs. a multimeter, adjust DIVIDER")
-print("  (and/or ADC_VREF) here first, then carry the confirmed value")
-print("  into config.py's VSYS_ADC_RATIO before wiring up the real")
-print("  drivers/battery.py driver.")
+print("  TEST 16 complete. DIVIDER=2.49 is bench-confirmed at one")
+print("  charge level (~3.45V). If you can check at a meaningfully")
+print("  different charge level (e.g. after a full charge), that")
+print("  confirms linearity across the whole range, not just here.")
 print("=" * 48)
