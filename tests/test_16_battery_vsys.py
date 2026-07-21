@@ -24,13 +24,19 @@
 #   3. GP25-high dance doesn't crash even though WLAN is never active here
 #   4. Percentage interpolation between BAT_EMPTY_V/BAT_FULL_V
 #
-# ✓ BENCH-CONFIRMED — the widely-documented Pico-W-family divider of 3
-# was WRONG for this board: first run printed 4.15V (raw≈27520) while a
-# multimeter on the battery read 3.45V, ~94% vs ~17% charge — not a small
-# error. Real ratio, solved from that data point: ≈2.49. Calibrated from
-# ONE voltage level — a second check at a meaningfully different charge
-# level (e.g. after a full charge to ~4.2V) would confirm linearity holds
-# across the whole range, not just near 3.45V. See config.VSYS_ADC_RATIO.
+# ✓ BENCH-CONFIRMED, two data points — the widely-documented Pico-W-family
+# divider of 3 was WRONG for this board (first run: ~94% vs a real ~17%,
+# not a small error). Two calibration points so far:
+#   3.45V multimeter <-> raw≈27520  (implies ratio ≈2.49 alone)
+#   3.71V multimeter <-> raw≈28257  (implies ratio ≈2.61 alone)
+# They don't fully agree (~4.7% apart) — likely LiPo "surface charge"
+# settling right after charging rather than a flaw in the ratio itself.
+# Combined zero-intercept fit: ≈2.55 (used below), still ~±0.08V residual
+# at each point — good enough for a coarse indicator, not lab-grade. For
+# tighter calibration: let the battery rest 15+ min post-charge, take
+# both readings close together in time, and get a third point further
+# away (e.g. near BAT_EMPTY_V ~3.3V) for a real linear fit. See
+# config.VSYS_ADC_RATIO.
 # ─────────────────────────────────────────────────────────────────
 
 import time
@@ -43,7 +49,7 @@ print("=" * 48)
 
 ADC_MAX   = 65535       # read_u16() full scale
 ADC_VREF  = 3.3         # RP2350 ADC reference voltage
-DIVIDER   = 2.49        # ✓ bench-confirmed on this board (was 3 — wrong, see header)
+DIVIDER   = 2.55        # ✓ bench-confirmed on this board, 2-point fit (was 3 — wrong, see header)
 
 BAT_FULL_V  = 4.2
 BAT_EMPTY_V = 3.3
@@ -84,8 +90,8 @@ except KeyboardInterrupt:
     pass
 
 print("\n" + "=" * 48)
-print("  TEST 16 complete. DIVIDER=2.49 is bench-confirmed at one")
-print("  charge level (~3.45V). If you can check at a meaningfully")
-print("  different charge level (e.g. after a full charge), that")
-print("  confirms linearity across the whole range, not just here.")
+print("  TEST 16 complete. DIVIDER=2.55 is a 2-point fit (3.45V and")
+print("  3.71V) that still leaves ~+/-0.08V residual error at each")
+print("  point. A third reading further away (e.g. near BAT_EMPTY_V,")
+print("  ~3.3V), taken 15+ min after any charging, would tighten this.")
 print("=" * 48)

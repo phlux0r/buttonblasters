@@ -183,18 +183,25 @@ HAPTIC_PULSE_MS = 60
 # board. See tests/test_16_battery_vsys.py and drivers/battery.py.
 PIN_BAT_ADC    = 29    # GP29 / ADC3 — VSYS monitor (see note above)
 PIN_WIFI_CS    = 25    # held HIGH before each battery read (see note above)
-# ✓ BENCH-CONFIRMED — the widely-documented Pico-W-family divider ratio
-# of 3 was WRONG for this board: tests/test_16_battery_vsys.py printed
-# 4.15V (raw≈27520) while a multimeter on the battery read 3.45V. Solving
-# for the actual ratio from that data point: 3.45 / (27520 * 3.3/65535)
-# ≈ 2.49. This is not a small correction — at BAT_FULL_V/BAT_EMPTY_V
-# below, the wrong ratio reported ~94% charge for a battery actually at
-# ~17%, right next to the BAT_WARN_PCT low-battery threshold. Calibrated
-# from a SINGLE data point (one voltage level) — if you get a chance to
-# check at a meaningfully different charge level (e.g. after a full
-# charge to ~4.2V), that would confirm linearity holds across the whole
-# range rather than just near 3.45V.
-VSYS_ADC_RATIO = 2.49
+# ✓ BENCH-CONFIRMED, calibrated from TWO data points — the widely-
+# documented Pico-W-family divider ratio of 3 was WRONG for this board.
+#   Point 1: multimeter 3.45V, raw≈27520  -> implies ratio ≈2.49 alone
+#   Point 2: multimeter 3.71V, raw≈28257  -> implies ratio ≈2.61 alone
+# The two don't fully agree (~4.7% apart) — likely LiPo "surface charge"
+# settling right after charging (voltage can drift for 10-15 min post-
+# charge) meaning the multimeter and ADC readings weren't sampling the
+# exact same true voltage, not necessarily a flaw in this ratio itself.
+# Zero-intercept least-squares fit across both points: ≈2.55 (used
+# below) — still leaves ~±0.08V residual error at each point, so treat
+# this as "good enough for a coarse indicator," not lab-grade precision.
+# Regardless of the exact value, this is a MASSIVE improvement over the
+# original ratio=3: that reported ~94% for a battery actually near 20%,
+# right next to BAT_WARN_PCT. For tighter calibration: let the battery
+# rest 15+ min after charging before taking a reference reading, take
+# the multimeter and test-script readings as close together in time as
+# possible, and get a third point further from these two (e.g. near
+# BAT_EMPTY_V, ~3.3V) for a real linear fit instead of two close points.
+VSYS_ADC_RATIO = 2.55
 BAT_FULL_V     = 4.2
 BAT_EMPTY_V    = 3.3
 BAT_WARN_PCT   = 15

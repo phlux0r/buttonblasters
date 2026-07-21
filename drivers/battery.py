@@ -9,12 +9,15 @@
 # the documented safe-read dance (GP25 held high) as cheap insurance,
 # matching the standard technique for this board.
 #
-# ✓ BENCH-CONFIRMED (one data point) — the widely-documented Pico-W-family
+# ✓ BENCH-CONFIRMED (two data points) — the widely-documented Pico-W-family
 # divider ratio of 3 was WRONG for this board: reported ~94% charge for a
-# battery a multimeter measured at ~17%. See tests/test_16_battery_vsys.py
-# and config.VSYS_ADC_RATIO (now 2.49) for the calibration. If you check
-# this at another charge level and it's off, that constant is the first
-# thing to adjust.
+# battery a multimeter measured at ~17%. Two calibration points (3.45V and
+# 3.71V) don't fully agree with each other (~4.7% apart, likely LiPo
+# "surface charge" settling right after charging, not a flaw in the
+# ratio) — combined fit is config.VSYS_ADC_RATIO=2.55, good enough for a
+# coarse indicator, not lab-grade precision. See
+# tests/test_16_battery_vsys.py for the full calibration history and how
+# to tighten it further (a third point away from these two).
 
 import config
 
