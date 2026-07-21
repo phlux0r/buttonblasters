@@ -30,7 +30,7 @@ The project is fully open-source: firmware, hardware design notes, and 3D print 
 | LEDs | WS2812B strip (8 LEDs, shell edge) via 74AHCT125 level shifter |
 | Haptic | ERM coin vibration motor via 2N3904 NPN transistor |
 | GPIO expander | MCP23008 I²C DIP-8 (0x20) — all physical buttons |
-| Power | LiPo 3.7V 2000mAh + TP4056 USB-C charger (wiring pending) |
+| Power | LiPo 3.7V 1200mAh + TP4056 USB-C charger (wiring pending) |
 | Shell | 3D-printed PLA+ or PETG |
 
 **Dev environment:** MicroPython v1.28.0 (RPI_PICO2_W build), VS Code + MicroPico extension.
@@ -323,11 +323,11 @@ Star Bonk! is the first game to use `core/sprite_engine.py` + `drivers/strip_ren
 
 ## 🔌 Power & Charging
 
-- **Battery:** LiPo 3.7V 2000mAh (503759 or similar flat cell)
-- **Charger:** TP4056 module **with DW01 protection IC** — essential for a kids' device — wiring not yet done
-- **Charging:** USB-C, ~2 hours to full
+- **Battery:** LiPo 3.7V 1200mAh flat cell
+- **Charger:** TP4056 module **with DW01 protection IC** — essential for a kids' device — wiring not yet done. Charge current (set by the module's programming resistor) should be chosen to suit this cell's 1200mAh capacity, not assumed from a generic default — worth confirming the module's actual charge current before wiring it in
+- **Charging:** USB-C — time to full depends on the TP4056's configured charge current, not yet confirmed
 - **Switch:** SPDT slide switch on the 3.3V regulated rail
-- **Battery indicator:** Reads VSYS directly via the Pico 2 W's native GP29/ADC3 — no extra components. MCP23008 has no ADC capability, so the original GP5 plan was replaced. See `tests/test_16_battery_vsys.py` for the bring-up test and `drivers/battery.py` for the driver — **neither is bench-confirmed on real hardware yet**
+- **Battery indicator:** Reads VSYS directly via the Pico 2 W's native GP29/ADC3 — no extra components. MCP23008 has no ADC capability, so the original GP5 plan was replaced. See `tests/test_16_battery_vsys.py` for the bring-up test and `drivers/battery.py` for the driver. **Bench-confirmed** — the divider ratio needed real calibration (the commonly-documented value was wrong for this board); see `documents/HARDWARE_NOTES.md` for the full story. Not yet wired into the menu/UI
 
 ---
 
