@@ -168,16 +168,36 @@ LED_BRIGHTNESS = 0.35
 PIN_HAPTIC     = 22    # ✓ confirmed GP22
 HAPTIC_PULSE_MS = 60
 
-# ── Battery ADC — pending ────────────────────────────────────────
-# Voltage divider → MCP23008 GP5 (future — not yet wired)
-PIN_BAT_ADC    = None
+# ── Battery ADC — pending bench confirmation ─────────────────────
+# Was planned as a voltage divider into MCP23008 GP5, but the MCP23008
+# is a pure digital I/O expander — it has no ADC capability at all, so
+# that plan could never have given a real voltage/percentage, only a
+# HIGH/LOW flag. Switched to the Pico 2 W's own native VSYS monitor
+# instead: GP29/ADC3 reads VSYS (the battery rail) directly, no new
+# components needed. GP29 shares its physical pin with the CYW43439
+# wireless chip's SPI CLK line, so reading it mid-SPI-transaction would
+# give garbage — but this firmware never imports `network`/uses WLAN
+# anywhere, so that conflict never actually arises here. GP25 (the
+# wireless chip's CS-equivalent line) is still held high before each
+# read as cheap insurance, matching the documented technique for this
+# board. See tests/test_16_battery_vsys.py and drivers/battery.py.
+PIN_BAT_ADC    = 29    # GP29 / ADC3 — VSYS monitor (see note above)
+PIN_WIFI_CS    = 25    # held HIGH before each battery read (see note above)
+# VSYS is divided by ~3 before reaching ADC3 — this is the widely
+# documented Pico-W-family divider ratio, NOT yet measured on this board.
+# Cross-check tests/test_16_battery_vsys.py's printed voltage against a
+# multimeter reading of the battery/VSYS rail before trusting this.
+VSYS_ADC_RATIO = 3
 BAT_FULL_V     = 4.2
 BAT_EMPTY_V    = 3.3
 BAT_WARN_PCT   = 15
 
 # ── Dead / reserved pins ─────────────────────────────────────────
 # GP5  — DEAD. Output driver measures -4.2mV when set HIGH. Never use.
-# GP23/24/25/29 — WiFi internal. Never connect anything.
+# GP23/24 — WiFi internal. Never connect anything.
+# GP25/29 — WiFi internal, but DELIBERATELY used for battery monitoring
+#           (see Battery ADC section above) — never wired/tested before
+#           now, so this note is not itself bench-confirmed either.
 
 # ── UX timing ────────────────────────────────────────────────────
 MENU_SCROLL_MS     = 120
@@ -218,11 +238,13 @@ COUNTDOWN_TEXT_SCALE = 7
 #  GP20  WS2812B → 74AHCT125     GP21  DC BTN-3
 #  GP22  Haptic → 2N3904         GP26  I2C SDA
 #  GP27  I2C SCL                 GP28  TOUCH_INT only
-#  GP23/24/25/29 WiFi — NEVER CONNECT
+#  GP23/24 WiFi — NEVER CONNECT
+#  GP25  WiFi CS-equiv, held HIGH for battery reads (not bench-confirmed)
+#  GP29  VSYS monitor / ADC3 — battery voltage (not bench-confirmed)
 #
 # MCP23008 (0x20) GPIO:
 #  MCP0  SCREEN-0 button         MCP1  SCREEN-1 button
 #  MCP2  SCREEN-2 button         MCP3  SCREEN-3 button
-#  MCP4  BACK/HOME button        MCP5  Battery ADC (future)
+#  MCP4  BACK/HOME button        MCP5  spare (battery moved to GP29/ADC3)
 #  MCP6  spare                   MCP7  spare
 # ══════════════════════════════════════════════════════════════════

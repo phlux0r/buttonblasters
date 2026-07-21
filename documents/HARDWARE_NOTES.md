@@ -329,5 +329,20 @@ Outstanding:
 - Asset pipeline: family photos → stylised art → RGB565 conversion.
 - Family voice recording sessions for "My Big Day Out".
 - 3D-printed shell design.
-- Battery ADC wiring (MCP23008 GP5) and TP4056 charger wiring.
+- Battery voltage/percentage via GP29/ADC3 (VSYS monitor — see below) — driver written, not yet bench-tested. TP4056 charger wiring still pending separately.
 - Remaining games in the library (Button Memory next).
+
+## Battery Monitoring — Design Change (Not Yet Bench-Confirmed)
+
+The original plan ("Battery ADC signal → MCP23008 GP5") was never actually workable: the MCP23008 is a pure digital I/O expander with **no ADC capability at all** — it could only ever have given a HIGH/LOW flag, never a real voltage or percentage. This was caught before any wiring was done, not after a failed attempt.
+
+Replacement: the Pico 2 W's own native VSYS monitor, read via **GP29/ADC3**, needing zero new components. GP29 shares its physical pin with the CYW43439 wireless chip's SPI CLK line — reading it mid-SPI-transaction to the wireless chip would give garbage — but this firmware **never imports `network` or uses `WLAN` anywhere** (confirmed via grep across the whole codebase), so that conflict never actually arises here. **GP25** (the wireless chip's CS-equivalent line) is still held HIGH before every read as cheap insurance, matching the documented technique for this board family.
+
+Important distinction from every other "confirmed" pin in this file: `config.py`'s prior "GP23/24/25/29 — WiFi internal, never connect anything" note was **inherited caution from general Pico W guidance, not an actual observed hardware failure** — user confirmed GP29 was never wired or tested before now. So unlike GP5 (measured -4.2mV, genuinely dead) or the other bench-confirmed pins in this file, this is a deliberate, reasoned departure from a blanket precaution, not a correction of a real prior failure.
+
+Added:
+- `tests/test_16_battery_vsys.py` — standalone bring-up test, prints raw ADC + computed voltage + percentage every 2s for 30s. **Run this first**, cross-check the printed voltage against a multimeter reading of the actual battery/VSYS rail.
+- `drivers/battery.py` — production `BatteryMonitor` driver (`read_voltage()`, `read_percent()`, `.low` property), following the same style as `drivers/haptic.py`. **Not wired into `core/kernel.py`'s boot sequence or any menu/UI** — deliberately left as a standalone, opt-in driver until the bring-up test confirms real numbers on this board. Given how many boot-time RAM fixes this session already needed, adding an unconfirmed new driver to the boot path wasn't worth the risk before it's actually verified.
+- `config.py`: `PIN_BAT_ADC=29`, `PIN_WIFI_CS=25`, `VSYS_ADC_RATIO=3` (the widely-documented Pico-W-family divider ratio — **not yet measured on this specific board**, first thing to adjust if the test's printed voltage is off).
+
+**Next step on the bench:** run `test_16_battery_vsys.py` with the battery connected to VSYS/GND, compare the printed voltage to a multimeter reading. If they match, `drivers/battery.py` is ready to wire into the menu (battery icon/percentage display) as a follow-up. If they don't match, adjust `VSYS_ADC_RATIO` first.

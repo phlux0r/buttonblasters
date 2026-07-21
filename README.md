@@ -29,7 +29,7 @@ The project is fully open-source: firmware, hardware design notes, and 3D print 
 | Audio | MAX98357A I2S DAC + amp → 40mm 3W 4Ω speaker |
 | LEDs | WS2812B strip (8 LEDs, shell edge) via 74AHCT125 level shifter |
 | Haptic | ERM coin vibration motor via 2N3904 NPN transistor |
-| GPIO expander | MCP23008 I²C DIP-8 (0x20) — all physical buttons + battery ADC line |
+| GPIO expander | MCP23008 I²C DIP-8 (0x20) — all physical buttons |
 | Power | LiPo 3.7V 2000mAh + TP4056 USB-C charger (wiring pending) |
 | Shell | 3D-printed PLA+ or PETG |
 
@@ -224,10 +224,12 @@ Confirmed via hardware bring-up tests 1–14 (see `tests/`). Full context and ra
 | GP26 | I²C SDA (FT6236 touch + MCP23008 expander, shared bus) |
 | GP27 | I²C SCL |
 | GP28 | TOUCH_INT only — not a nav button |
-| GP23/24/25/29 | WiFi internal — **never connect anything** |
+| GP23/24 | WiFi internal — **never connect anything** |
+| GP25 | WiFi CS-equivalent — held HIGH during battery reads (not bench-confirmed) |
+| GP29 | VSYS monitor / ADC3 — battery voltage (not bench-confirmed) |
 | MCP23008 GP0–3 | Screen buttons 0–3 |
 | MCP23008 GP4 | BACK/HOME button |
-| MCP23008 GP5 | Battery ADC signal (not yet wired) |
+| MCP23008 GP5 | Spare — battery monitoring moved to GP29/ADC3 (MCP23008 has no ADC) |
 
 > **Note:** WS2812B LEDs need 5V data logic. A 74AHCT125 level shifter sits between GP20 and the LED strip DIN pin.
 
@@ -325,7 +327,7 @@ Star Bonk! is the first game to use `core/sprite_engine.py` + `drivers/strip_ren
 - **Charger:** TP4056 module **with DW01 protection IC** — essential for a kids' device — wiring not yet done
 - **Charging:** USB-C, ~2 hours to full
 - **Switch:** SPDT slide switch on the 3.3V regulated rail
-- **Battery indicator:** Planned via MCP23008 GP5 ADC line — not yet wired
+- **Battery indicator:** Reads VSYS directly via the Pico 2 W's native GP29/ADC3 — no extra components. MCP23008 has no ADC capability, so the original GP5 plan was replaced. See `tests/test_16_battery_vsys.py` for the bring-up test and `drivers/battery.py` for the driver — **neither is bench-confirmed on real hardware yet**
 
 ---
 
