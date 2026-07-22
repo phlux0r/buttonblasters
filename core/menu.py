@@ -71,16 +71,21 @@ class Menu:
 
             if action == "prev":
                 self._idx = (self._idx - 1) % self._n
-                # Sound BEFORE the render: play_sfx is fire-and-forget (no
-                # wait=True), so this costs nothing but removes the render
-                # time as latency before the click is even triggered --
-                # snappier feedback on the physical button press.
-                await audio.play_sfx("menu_move.wav")
+                # Sound BEFORE the render, and AWAITED (wait=True) — same
+                # rule as games/bonk/game.py's _bonk_feedback() and
+                # games/match/game.py's _reveal_correct(): menu_move.wav can
+                # resolve via an SD-backed path, and SD shares the SPI0 bus
+                # with the displays. Without wait=True here, that fire-and-
+                # forget file read raced _render_full()'s own SPI0 writes —
+                # confirmed on hardware as screen tearing. wait=True still
+                # starts the click instantly; it just makes the render wait
+                # for the read to finish first, so the two never overlap.
+                await audio.play_sfx("menu_move.wav", wait=True)
                 await self._render_full()
 
             elif action == "next":
                 self._idx = (self._idx + 1) % self._n
-                await audio.play_sfx("menu_move.wav")
+                await audio.play_sfx("menu_move.wav", wait=True)
                 await self._render_full()
 
             elif action == "select":
@@ -111,7 +116,7 @@ class Menu:
                     self._idx = (self._idx + 1) % self._n
                 elif direction == "swipe_right":
                     self._idx = (self._idx - 1) % self._n
-                await audio.play_sfx("menu_move.wav")
+                await audio.play_sfx("menu_move.wav", wait=True)
                 await self._render_full()
 
     # ── Rendering ────────────────────────────────────────────────
