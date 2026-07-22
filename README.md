@@ -323,9 +323,22 @@ Star Bonk! is the first game to use `core/sprite_engine.py` + `drivers/strip_ren
 
 ## 🔌 Power & Charging
 
+**⚠️ PLANNED, NOT YET WIRED — everything in this section is a design, not a confirmed build.** See `documents/HARDWARE_NOTES.md` for the full reasoning behind each decision below.
+
 - **Battery:** LiPo 3.7V 1200mAh flat cell
-- **Charger:** TP4056 module **with DW01 protection IC** — essential for a kids' device — wiring not yet done. Charge current (set by the module's programming resistor) should be chosen to suit this cell's 1200mAh capacity, not assumed from a generic default — worth confirming the module's actual charge current before wiring it in
-- **Charging:** USB-C — time to full depends on the TP4056's configured charge current, not yet confirmed
+- **Charger:** TP4056 module **with DW01 protection IC** — essential for a kids' device. Charge current (set by the module's programming resistor) should be chosen to suit this cell's 1200mAh capacity, not assumed from a generic default — confirm the module's actual charge current before wiring it in
+- **Charging port:** a **dedicated USB-C port exposed on the shell**, wired to the TP4056 module's own USB input — deliberately separate from the Pico's own micro-USB port
+- **Dev/firmware port:** the Pico's onboard micro-USB, tucked behind a removable shell cover — accessible for `mpremote`/flashing, but not a normal-use port. Kept separate from charging so the two never compete for the same connector
+- **Power topology:**
+  ```
+  Battery+/- ──→ TP4056 BAT+/BAT-
+  TP4056 OUT+ (protected, through DW01) ──┬──→ MT3608 buck-boost IN+ → 5V_REG
+                                          │        → MAX98357A VIN + WS2812B strip power
+                                          └──→ [new] Schottky diode (e.g. 1N5817) ──→ Pico VSYS
+  All grounds shared common.
+  ```
+  Everything downstream (VSYS, the boost converter, audio, LEDs) draws from TP4056's *protected* output, not the raw cell — so DW01's over-discharge/over-current protection covers the whole system, not just charging. The added diode between TP4056's output and VSYS specifically prevents the Pico's own dev-USB port from ever pushing current back into the battery if both it and the battery happen to be connected at once — a real risk that came up during bring-up (see HARDWARE_NOTES.md), not just a theoretical one.
+- **5V rail (audio + LEDs):** an MT3608 boost converter (2A, 2–24V in → 5–28V adjustable out) steps the battery-derived voltage up to a stable 5V, replacing the MAX98357A's and WS2812B strip's original direct-to-VBUS wiring — VBUS is only powered when USB is connected, so both were previously silent/dim on battery-only power. **The MT3608's output must be set to a clean 5.0V with a multimeter, with nothing connected to its output, before wiring anything to it** — it ships with output voltage unset.
 - **Switch:** SPDT slide switch on the 3.3V regulated rail
 - **Battery indicator:** Reads VSYS directly via the Pico 2 W's native GP29/ADC3 — no extra components. MCP23008 has no ADC capability, so the original GP5 plan was replaced. See `tests/test_16_battery_vsys.py` for the bring-up test and `drivers/battery.py` for the driver. **Bench-confirmed** — the divider ratio needed real calibration (the commonly-documented value was wrong for this board); see `documents/HARDWARE_NOTES.md` for the full story. Not yet wired into the menu/UI
 
