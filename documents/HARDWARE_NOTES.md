@@ -369,7 +369,7 @@ TP4056's own USB-C (charging input) ──→ dedicated charging port on the she
 TP4056 OUT+ (protected, through its DW01) ──→ [master ON/OFF switch] ──┬──→ MT3608 IN+ → 5V_REG
                                                                        │        → MAX98357A VIN (was VBUS)
                                                                        │        → WS2812B strip power (was VBUS)
-                                                                       └──→ [new] Schottky diode (e.g. 1N5817) ──→ Pico VSYS
+                                                                       └──→ [new] Schottky diode (1N5819, on hand) ──→ Pico VSYS
 All grounds shared common.
 ```
 

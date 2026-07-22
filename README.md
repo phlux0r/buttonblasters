@@ -334,7 +334,7 @@ Star Bonk! is the first game to use `core/sprite_engine.py` + `drivers/strip_ren
   Battery+/- ──→ TP4056 BAT+/BAT-
   TP4056 OUT+ (protected, through DW01) ──→ [master ON/OFF switch] ──┬──→ MT3608 buck-boost IN+ → 5V_REG
                                                                      │        → MAX98357A VIN + WS2812B strip power
-                                                                     └──→ [new] Schottky diode (e.g. 1N5817) ──→ Pico VSYS
+                                                                     └──→ [new] Schottky diode (1N5819, on hand) ──→ Pico VSYS
   All grounds shared common.
   ```
   Everything downstream (VSYS, the boost converter, audio, LEDs) draws from TP4056's *protected* output, not the raw cell — so DW01's over-discharge/over-current protection covers the whole system, not just charging. The added diode between TP4056's output and VSYS specifically prevents the Pico's own dev-USB port from ever pushing current back into the battery if both it and the battery happen to be connected at once — a real risk that came up during bring-up (see HARDWARE_NOTES.md), not just a theoretical one.
