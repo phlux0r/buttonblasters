@@ -71,13 +71,17 @@ class Menu:
 
             if action == "prev":
                 self._idx = (self._idx - 1) % self._n
-                await self._render_full()
+                # Sound BEFORE the render: play_sfx is fire-and-forget (no
+                # wait=True), so this costs nothing but removes the render
+                # time as latency before the click is even triggered --
+                # snappier feedback on the physical button press.
                 await audio.play_sfx("menu_move.wav")
+                await self._render_full()
 
             elif action == "next":
                 self._idx = (self._idx + 1) % self._n
-                await self._render_full()
                 await audio.play_sfx("menu_move.wav")
+                await self._render_full()
 
             elif action == "select":
                 # BTN-0 → launch idx-1 preview, BTN-2 → launch idx+1 preview
@@ -107,8 +111,8 @@ class Menu:
                     self._idx = (self._idx + 1) % self._n
                 elif direction == "swipe_right":
                     self._idx = (self._idx - 1) % self._n
-                await self._render_full()
                 await audio.play_sfx("menu_move.wav")
+                await self._render_full()
 
     # ── Rendering ────────────────────────────────────────────────
 

@@ -196,11 +196,15 @@ class BaseGame:
 
     async def countdown(self, from_n: int = 3):
         for n in range(from_n, 0, -1):
-            await self._show_countdown_text(str(n), 0x18C3)
+            # Sound BEFORE the render: play_sfx is fire-and-forget, so this
+            # costs nothing but removes the full-screen fill + text render
+            # as latency before each number's callout even starts — matters
+            # most in the app's single most rhythm-sensitive moment.
             await self.audio.play_sfx(f"count_{n}.wav")
+            await self._show_countdown_text(str(n), 0x18C3)
             await asyncio.sleep_ms(800)
-        await self._show_countdown_text("GO!", 0x0320)
         await self.audio.play_sfx("go.wav")
+        await self._show_countdown_text("GO!", 0x0320)
         await asyncio.sleep_ms(500)
 
     def _make_result(self) -> GameResult:
