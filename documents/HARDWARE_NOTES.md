@@ -366,14 +366,15 @@ Battery+/- ──→ TP4056 BAT+/BAT-
 TP4056's own USB-C (charging input) ──→ dedicated charging port on the shell
                                          (separate connector from the Pico's own USB)
 
-TP4056 OUT+ (protected, through its DW01) ──┬──→ MT3608 IN+ → 5V_REG
-                                            │        → MAX98357A VIN (was VBUS)
-                                            │        → WS2812B strip power (was VBUS)
-                                            └──→ [new] Schottky diode (e.g. 1N5817) ──→ Pico VSYS
+TP4056 OUT+ (protected, through its DW01) ──→ [master ON/OFF switch] ──┬──→ MT3608 IN+ → 5V_REG
+                                                                       │        → MAX98357A VIN (was VBUS)
+                                                                       │        → WS2812B strip power (was VBUS)
+                                                                       └──→ [new] Schottky diode (e.g. 1N5817) ──→ Pico VSYS
 All grounds shared common.
 ```
 
 Reasoning for each piece:
+- **The master switch moved here from its original planned spot ("SPDT slide switch on the 3.3V regulated rail").** That original placement was downstream of the Pico's own onboard 3.3V regulator, so it could only ever have power-cycled the Pico itself — the MT3608 branch (audio + LEDs) draws independently from TP4056's output and would have stayed live regardless, meaning "off" wouldn't actually stop the device from drawing on the battery. Moving the switch to before the MT3608/VSYS split makes it a real master off — one switch, whole system, matching what "off" should mean on a battery-powered kids' device.
 - **Everything downstream draws from TP4056's protected output, not the raw cell** — DW01's over-discharge/over-current protection now covers the whole system's draw (audio, LEDs, the Pico itself), not just the charge cycle.
 - **The new diode between TP4056's output and VSYS is what actually closes Problem 2.** TP4056+DW01's protection MOSFETs pass current through in *normal* operation (protection only cuts off in abnormal conditions) — so even with TP4056 in the loop, VSYS being pushed higher (e.g. by the Pico's own dev-USB port connected at the same time as the battery) could still find a path back through TP4056's normal pass-through into the cell. The diode blocks that specific remaining path. Reduced-but-not-eliminated risk in practice now that the Pico's port is behind a cover and not a normal-use connector, but the diode is the actual fix, not the cover — a kids' device shouldn't rely on "nobody will plug it in wrong."
 - **The MT3608 taps TP4056's OUT+ directly**, before the new diode, so the diode's forward-voltage drop doesn't eat into the boost converter's input headroom — the diode's only job is protecting the VSYS/Pico-USB path specifically.

@@ -332,14 +332,14 @@ Star Bonk! is the first game to use `core/sprite_engine.py` + `drivers/strip_ren
 - **Power topology:**
   ```
   Battery+/- ──→ TP4056 BAT+/BAT-
-  TP4056 OUT+ (protected, through DW01) ──┬──→ MT3608 buck-boost IN+ → 5V_REG
-                                          │        → MAX98357A VIN + WS2812B strip power
-                                          └──→ [new] Schottky diode (e.g. 1N5817) ──→ Pico VSYS
+  TP4056 OUT+ (protected, through DW01) ──→ [master ON/OFF switch] ──┬──→ MT3608 buck-boost IN+ → 5V_REG
+                                                                     │        → MAX98357A VIN + WS2812B strip power
+                                                                     └──→ [new] Schottky diode (e.g. 1N5817) ──→ Pico VSYS
   All grounds shared common.
   ```
   Everything downstream (VSYS, the boost converter, audio, LEDs) draws from TP4056's *protected* output, not the raw cell — so DW01's over-discharge/over-current protection covers the whole system, not just charging. The added diode between TP4056's output and VSYS specifically prevents the Pico's own dev-USB port from ever pushing current back into the battery if both it and the battery happen to be connected at once — a real risk that came up during bring-up (see HARDWARE_NOTES.md), not just a theoretical one.
 - **5V rail (audio + LEDs):** an MT3608 boost converter (2A, 2–24V in → 5–28V adjustable out) steps the battery-derived voltage up to a stable 5V, replacing the MAX98357A's and WS2812B strip's original direct-to-VBUS wiring — VBUS is only powered when USB is connected, so both were previously silent/dim on battery-only power. **The MT3608's output must be set to a clean 5.0V with a multimeter, with nothing connected to its output, before wiring anything to it** — it ships with output voltage unset.
-- **Switch:** SPDT slide switch on the 3.3V regulated rail
+- **Switch:** SPDT slide switch moved to **before the MT3608/VSYS split** (right after TP4056's protected output, per the topology above) — NOT on the Pico's 3.3V regulated rail as originally planned. That original placement was downstream of the Pico's own onboard regulator, so it would only ever have powered the Pico itself down; the MT3608 branch (audio + LEDs) draws independently and would have stayed live, defeating the point of an "off" switch and leaving something drawing on the battery whenever the device is supposedly off
 - **Battery indicator:** Reads VSYS directly via the Pico 2 W's native GP29/ADC3 — no extra components. MCP23008 has no ADC capability, so the original GP5 plan was replaced. See `tests/test_16_battery_vsys.py` for the bring-up test and `drivers/battery.py` for the driver. **Bench-confirmed** — the divider ratio needed real calibration (the commonly-documented value was wrong for this board); see `documents/HARDWARE_NOTES.md` for the full story. Not yet wired into the menu/UI
 
 ---
