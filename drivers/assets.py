@@ -60,10 +60,10 @@ class AssetManager:
         if config.SD_DEFERRED:
             print("[assets] SD deferred — separate breakout needed")
             return False
+        from drivers.spi_bus import spi_bus
         try:
             from sdcard import SDCard
             from machine import SPI
-            from drivers.spi_bus import spi_bus
 
             # Safety: ensure no other device on the shared SPI0 bus is
             # selected during SD init. Display drivers already idle CS
@@ -85,7 +85,19 @@ class AssetManager:
             sd = SDCard(sd_spi, cs, baudrate=_SD_DATA_BAUD)
             os.mount(sd, _SD_MOUNT)
 
-            # Restore the shared bus to display speed for the displays.
+            self._sd_mounted = True
+            print("[assets] SD mounted at", _SD_MOUNT, "@ 400kHz data")
+            return True
+        except Exception as e:
+            print(f"[assets] SD mount failed: {e}")
+            return False
+        finally:
+            # sd_spi and spi_bus.spi are two Python objects over the same
+            # underlying SPI0 peripheral (same config.SPI_ID) — this runs
+            # on every exit, success or failure, so a failed mount can
+            # never strand the bus at SD speed (the slow-fail-screen /
+            # 44s-fill symptom). Goes through _set_freq so the bus's own
+            # cache stays correct too, not just the hardware register.
             #
             # SHARED-BUS HAZARD (known, not yet handled): SD and all five
             # displays share SPI0 at different speeds (SD=400kHz,
@@ -97,14 +109,7 @@ class AssetManager:
             # but must be solved before any game streams SD assets mid-draw
             # (e.g. My Big Day Out). Fix will be per-transaction speed
             # re-assertion around SD reads.
-            spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)
-
-            self._sd_mounted = True
-            print("[assets] SD mounted at", _SD_MOUNT, "@ 400kHz data")
-            return True
-        except Exception as e:
-            print(f"[assets] SD mount failed: {e}")
-            return False
+            spi_bus._set_freq(config.SPI_FREQ_DISPLAY)
 
     def build_index(self):
         if not self._sd_mounted:

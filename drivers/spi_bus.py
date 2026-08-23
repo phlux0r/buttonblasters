@@ -21,9 +21,13 @@ class SpiBus:
         self._current_freq = config.SPI_FREQ_DISPLAY
 
     def _set_freq(self, freq):
-        if freq != self._current_freq:
-            self.spi.init(baudrate=freq)
-            self._current_freq = freq
+        # Always re-init, never trust the cache alone: code outside this
+        # class (SD mount/read) touches the same SPI0 peripheral directly
+        # via raw spi.init() calls, which can desync _current_freq from
+        # the real hardware speed. A stale cache then skips a needed
+        # re-init and strands the bus slow — see HARDWARE_NOTES.md.
+        self.spi.init(baudrate=freq)
+        self._current_freq = freq
 
     def device(self, cs_pin: Pin, freq: int = None):
         return _DeviceContext(self, cs_pin,
