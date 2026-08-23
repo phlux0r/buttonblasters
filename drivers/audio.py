@@ -66,6 +66,49 @@ _SYNTH_MAP = {
 }
 
 
+def _read_wav_header(f):
+    """Parse RIFF/WAVE chunks properly instead of assuming a fixed 44-byte
+    header. Some encoders insert extra chunks (LIST/INFO/fact/etc.) before
+    the data chunk -- trusting byte 44 as the start of audio data misaligns
+    everything after it for those files, which plays back as crunchy noise
+    rather than anything resembling the source (this was silently happening
+    for whichever clips came from a different encoder than the documented
+    ffmpeg pipeline). Returns (channels, sample_rate, bits, data_offset,
+    data_size), or None if this isn't a readable WAV."""
+    riff = f.read(12)
+    if len(riff) < 12 or riff[:4] != b'RIFF' or riff[8:12] != b'WAVE':
+        return None
+    channels = sample_rate = bits = None
+    data_offset = data_size = None
+    pos = 12   # tracked manually -- .tell() isn't relied on elsewhere in
+               # this codebase's file I/O, .seek(offset, whence) is
+    while True:
+        chunk_hdr = f.read(8)
+        if len(chunk_hdr) < 8:
+            break
+        pos += 8
+        chunk_id, chunk_size = chunk_hdr[:4], struct.unpack('<I', chunk_hdr[4:8])[0]
+        if chunk_id == b'fmt ':
+            fmt = f.read(chunk_size)
+            channels    = struct.unpack('<H', fmt[2:4])[0]
+            sample_rate = struct.unpack('<I', fmt[4:8])[0]
+            bits        = struct.unpack('<H', fmt[14:16])[0]
+            pos += chunk_size
+        elif chunk_id == b'data':
+            data_offset = pos
+            data_size   = chunk_size
+            break   # audio data itself isn't read here, just located
+        else:
+            f.seek(chunk_size, 1)   # skip chunk we don't care about
+            pos += chunk_size
+        if chunk_size % 2:           # chunks are word-aligned
+            f.seek(1, 1)
+            pos += 1
+    if data_offset is None:
+        return None
+    return channels, sample_rate, bits, data_offset, data_size
+
+
 @micropython.viper
 def _scale_volume(buf: ptr8, n_bytes: int, vol_q8: int):
     # In-place volume scale of 16-bit LE samples, vol_q8 = volume * 256.
@@ -253,6 +296,10 @@ class AudioManager:
         self._volume = max(0.0, min(1.0, vol))
 
     @property
+    def volume(self) -> float:
+        return self._volume
+
+    @property
     def voice_playing(self) -> bool:
         return (self._ready and self._voice_task is not None
                 and not self._voice_task.done())
@@ -335,9 +382,19 @@ class AudioManager:
         # docstring's CLIP RESOLUTION note for why that trade was reverted.
         f = open(path, 'rb')
         try:
-            header = f.read(44)
-            if header[:4] != b'RIFF' or header[8:12] != b'WAVE':
+            info = _read_wav_header(f)
+            if info is None:
                 return
+            channels, sample_rate, bits, data_offset, data_size = info
+            if (channels != 1 or bits != config.AUDIO_BITS
+                    or sample_rate != config.AUDIO_SAMPLE_RATE):
+                print(f"[audio] {path}: ch={channels} bits={bits} "
+                      f"rate={sample_rate}Hz -- expected mono/"
+                      f"{config.AUDIO_BITS}-bit/{config.AUDIO_SAMPLE_RATE}Hz, "
+                      f"will sound wrong. Re-export via the documented "
+                      f"ffmpeg command.")
+            f.seek(data_offset)
+
             # Reused across calls (grow-if-needed) instead of a fresh
             # bytearray every clip — this port's GC doesn't move/compact,
             # so repeated allocate-and-abandon here fragments the heap.
@@ -347,10 +404,13 @@ class AudioManager:
             mv  = memoryview(buf)
             self._i2s = self._make_i2s()   # one session for the whole clip
             try:
-                while True:
-                    n = f.readinto(buf)
+                remaining = data_size
+                while remaining > 0:
+                    want = min(len(buf), remaining)
+                    n = f.readinto(mv[:want])
                     if not n:
                         break
+                    remaining -= n
                     if self._volume < 1.0:
                         _scale_volume(mv, n, int(self._volume * 256))
                     await self._stream(mv, n)

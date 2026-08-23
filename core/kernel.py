@@ -20,6 +20,7 @@ import time
 from core.display_manager import display, rgb, warm_text_scratch
 from core.menu import Menu
 from core.game_base import GameResult
+from core.settings import load_volume
 from core import game_cache
 from games.registry import REGISTRY
 from drivers.buttons import buttons
@@ -176,6 +177,10 @@ class AppKernel:
             if not await display.paint_main_bg(_NOSD_BG):
                 await display.show_no_sd_warning()
             await asyncio.sleep_ms(1500)
+
+        # 7b. Restore saved volume (no-op / defaults to 1.0 without SD) —
+        # before the startup sound so it's audible at the right level too.
+        audio.set_volume(await load_volume())
 
         # 8. Startup sound
         await audio.play_sfx("startup.wav")

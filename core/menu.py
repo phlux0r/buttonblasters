@@ -26,7 +26,15 @@ from drivers.audio import audio
 from drivers.leds import leds
 from drivers.buttons import buttons, BTN_PREV, BTN_NEXT, BTN_BACK
 from drivers.assets import assets
+from core.settings import settings as settings_screen
 import config
+
+# Top-left gear/settings tap target on the main card. 48x48 is a little
+# under the project's own 57x57 min-touch-target guidance (see
+# display_manager.draw_touch_target's docstring) to limit how much of a
+# baked menu card it covers — worth revisiting if it proves fiddly to
+# actually tap.
+_SETTINGS_ICON = (4, 4, 48, 48)
 
 _CARD_COLORS = [
     rgb(60,  30, 120),
@@ -105,8 +113,13 @@ class Menu:
 
             elif action == "tap":
                 tx, ty = data
+                if buttons.hit_test(tx, ty, _SETTINGS_ICON):
+                    await audio.play_sfx("menu_select.wav")
+                    await settings_screen.run()
+                    buttons.clear()
+                    await self._render_full()
                 # Lower half of main screen = launch selected game
-                if ty > config.MAIN_H // 2:
+                elif ty > config.MAIN_H // 2:
                     await audio.play_sfx("menu_select.wav")
                     return self._registry[self._idx]
 
@@ -123,7 +136,14 @@ class Menu:
 
     async def _render_full(self):
         await self._render_main_card()
+        await self._render_settings_icon()
         await self._render_btn_screens()
+
+    async def _render_settings_icon(self):
+        # Drawn AFTER the main card (baked or procedural) so it isn't
+        # painted over — see _render_full()'s ordering.
+        x, y, w, h = _SETTINGS_ICON
+        await display.draw_touch_target(x, y, w, h, color=WHITE, label="SET")
 
     # Procedural fallback card (landscape 480×320) — used when a game has
     # no baked menu card asset. Draws title/description/stars/hint from the
