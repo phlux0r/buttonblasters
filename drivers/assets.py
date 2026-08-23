@@ -55,10 +55,10 @@ class AssetManager:
         if config.SD_DEFERRED:
             print("[assets] SD deferred — separate breakout needed")
             return False
+        from drivers.spi_bus import spi_bus
         try:
             from sdcard import SDCard
             from machine import SPI
-            from drivers.spi_bus import spi_bus
 
             # Safety: ensure no other device on the shared SPI0 bus is
             # selected during SD init. Display drivers already idle CS
@@ -80,33 +80,38 @@ class AssetManager:
             sd = SDCard(sd_spi, cs, baudrate=_SD_DATA_BAUD)
             os.mount(sd, _SD_MOUNT)
 
-            # Restore the shared bus to display speed for the displays.
-            #
-            # SHARED-BUS RULE: SD and all five displays share SPI0 at
-            # different speeds (SD=400kHz, displays=10MHz), and sdcard.py
-            # does NOT re-assert its speed per read. Every SD access after
-            # this point must therefore run inside a bracketed window —
-            # spi_bus.raw(config.SPI_FREQ_SD_DATA) or an explicit
-            # set_freq()/finally pair — as read_file(), game_cache, audio,
-            # and the kernel's score I/O all do. A bare open() on /sd runs
-            # at 10MHz and EIOs (or collides with a display transaction).
-            #
-            # sd_spi above is a SEPARATE machine.SPI(SPI_ID, ...) instance
-            # from spi_bus.spi — same physical peripheral, but SDCard's
-            # own init_spi() call on it just changed the real clock to
-            # 400kHz without spi_bus's cache knowing. invalidate() before
-            # the restore so set_freq() below doesn't wrongly skip the
-            # reinit because the (stale) cache happens to already say
-            # SPI_FREQ_DISPLAY (this was the actual "44-second fill" bug).
-            spi_bus.invalidate()
-            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
-
             self._sd_mounted = True
             print("[assets] SD mounted at", _SD_MOUNT, "@ 400kHz data")
             return True
         except Exception as e:
             print(f"[assets] SD mount failed: {e}")
             return False
+        finally:
+            # Restore the shared bus to display speed for the displays —
+            # on EVERY exit, not just success. sd_spi above is a SEPARATE
+            # machine.SPI(SPI_ID, ...) instance from spi_bus.spi — same
+            # physical peripheral, but SDCard's own init_spi() call on it
+            # changes the real clock to 400kHz without spi_bus's cache
+            # knowing. invalidate() so set_freq() below doesn't wrongly
+            # skip the reinit because the (stale) cache happens to already
+            # say SPI_FREQ_DISPLAY.
+            #
+            # This has to be a finally, not a tail call after os.mount():
+            # when the SD card isn't found, SDCard()/os.mount() raises and
+            # a tail call is skipped entirely, leaving the bus stranded at
+            # SD speed — every display draw after a failed mount runs at
+            # 400kHz instead of 10MHz (the slow-fail-screen symptom).
+            #
+            # SHARED-BUS RULE: SD and all five displays share SPI0 at
+            # different speeds (SD=400kHz, displays=10MHz), and sdcard.py
+            # does NOT re-assert its speed per read. Every SD access after
+            # a successful mount must therefore run inside a bracketed
+            # window — spi_bus.raw(config.SPI_FREQ_SD_DATA) or an explicit
+            # set_freq()/finally pair — as read_file(), game_cache, audio,
+            # and the kernel's score I/O all do. A bare open() on /sd runs
+            # at 10MHz and EIOs (or collides with a display transaction).
+            spi_bus.invalidate()
+            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
 
     def build_index(self):
         if not self._sd_mounted:
