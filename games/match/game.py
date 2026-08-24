@@ -105,6 +105,11 @@ def _fb_idx(name):
     return s % len(_FALLBACK)
 
 
+def _format_time(seconds: float) -> str:
+    total = int(seconds)
+    return "%d:%02d" % (total // 60, total % 60)
+
+
 class ShapeMatchGame(BaseGame):
 
     GAME_ID      = "match"
@@ -136,6 +141,8 @@ class ShapeMatchGame(BaseGame):
     async def run(self) -> GameResult:
         self._running = True
         self.score = 0
+        self._round_start_ms = time.ticks_ms()
+        self._finish_time_s  = None   # set only on a perfect (MAX_SCORE) run
 
         if self.USES_COUNTDOWN:
             await self.countdown(3)   # only ever fires once — never on replay
@@ -178,12 +185,27 @@ class ShapeMatchGame(BaseGame):
             if not self._running:
                 break   # mid-game BACK/HOME — exit immediately, no end screen
 
+            # Only a perfect round-set has a meaningful "time to finish" —
+            # a run with wrong answers isn't comparable to one without, so
+            # there's nothing to time unless every match was right.
+            if self.score == MAX_SCORE:
+                self._finish_time_s = time.ticks_diff(
+                    time.ticks_ms(), self._round_start_ms) / 1000
+
             choice = await self._end_screen()
             if choice == "back":
                 break
             self.score = 0   # "again" — straight back into round 1, no countdown
+            self._round_start_ms = time.ticks_ms()
+            self._finish_time_s  = None
 
         return self._make_result()
+
+    def _make_result(self) -> GameResult:
+        result = super()._make_result()
+        if self._finish_time_s is not None:
+            result.time_s = self._finish_time_s
+        return result
 
     async def unload(self):
         # Nothing game-owned to free; the arena persists on flash_assets for
@@ -347,6 +369,20 @@ class ShapeMatchGame(BaseGame):
         score_str = "%d of %d" % (self.score, MAX_SCORE)
         stars     = self._stars_for(self.score)
         star_str  = ("*" * stars) + ("-" * (3 - stars))
+
+        # Only a perfect round-set has a time worth showing. new_best is
+        # compared/updated in-memory here (same pattern as
+        # announce_round_complete()'s self.best_score bump) so consecutive
+        # "Play again" runs in one session compare against each other too,
+        # not just against what was persisted at game start.
+        time_str = None
+        if self._finish_time_s is not None:
+            new_best = self.best_time_s is None or self._finish_time_s < self.best_time_s
+            if new_best:
+                self.best_time_s = self._finish_time_s
+            time_str = ("NEW BEST! " if new_best else "TIME ") + \
+                _format_time(self._finish_time_s)
+
         if await self.display.paint_main_bg(RESULT_PATH):
             ssx = config.MAIN_W // 2 - len(score_str) * 8
             await self.display.text_main(
@@ -354,12 +390,20 @@ class ShapeMatchGame(BaseGame):
             stx = config.MAIN_W // 2 - len(star_str) * 12   # scale 3 -> char 24, half 12
             await self.display.text_main(
                 star_str, stx, RESULT_STARS_Y, YELLOW, WHITE, scale=3)
+            if time_str:
+                tx = config.MAIN_W // 2 - len(time_str) * 8
+                await self.display.text_main(
+                    time_str, tx, RESULT_STARS_Y + 28, 0xEA16, WHITE, scale=2)
         else:
             await self.display.show_splash(
                 "You got", score_str, bg_color=rgb(10, 60, 20))
             stx = config.MAIN_W // 2 - len(star_str) * 12
             await self.display.text_main(   # below show_splash's subtitle line
                 star_str, stx, 172, YELLOW, rgb(10, 60, 20), scale=3)
+            if time_str:
+                tx = config.MAIN_W // 2 - len(time_str) * 8
+                await self.display.text_main(
+                    time_str, tx, 200, YELLOW, rgb(10, 60, 20), scale=2)
 
         if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
             await self._show_back_fallback(3)

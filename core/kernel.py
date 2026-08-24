@@ -203,9 +203,11 @@ class AppKernel:
             game_cls = await self._menu.run()
             self._touch()
 
-            best_score = self._scores.get(game_cls.GAME_ID, {}).get("score", 0)
+            saved      = self._scores.get(game_cls.GAME_ID, {})
+            best_score = saved.get("score", 0)
+            best_time  = saved.get("best_time_s")
             game = game_cls(display, audio, leds, buttons, assets,
-                            best_score=best_score)
+                            best_score=best_score, best_time_s=best_time)
             await self._transition_to_game(game)
             await self._menu.show_loading()
             audio.stop_all()             # NEW — clean silence during install, not a stall
@@ -331,6 +333,12 @@ class AppKernel:
         if result.stars > entry.get("stars", 0):
             entry["stars"] = result.stars
             changed        = True
+        if result.time_s is not None:
+            best = entry.get("best_time_s")
+            if best is None or result.time_s < best:
+                entry["best_time_s"]  = result.time_s
+                result.new_best_time  = True
+                changed                = True
         self._scores[game_id] = entry
         if changed:
             await self._save_scores()

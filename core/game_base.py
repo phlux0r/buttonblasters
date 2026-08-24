@@ -28,11 +28,19 @@ def shuffle(lst):
 
 
 class GameResult:
-    def __init__(self, score=0, stars=0, completed=False, high_score=False):
+    def __init__(self, score=0, stars=0, completed=False, high_score=False,
+                 time_s=None, new_best_time=False):
         self.score      = score
         self.stars      = stars
         self.completed  = completed
         self.high_score = high_score
+        # time_s: seconds to finish, only meaningful for games that define
+        # a "clean run" worth timing (e.g. Match It! only records one on a
+        # perfect MAX_SCORE round-set) — None means "not applicable/not a
+        # qualifying run", not "zero time". new_best_time is set by
+        # AppKernel._save_result() the same way high_score already is.
+        self.time_s        = time_s
+        self.new_best_time = new_best_time
 
 
 class BaseGame:
@@ -63,18 +71,20 @@ class BaseGame:
                              # (e.g. total matches) so stars scale to it instead
                              # of the flat fallback below.
 
-    def __init__(self, display, audio, leds, buttons, assets_mgr, best_score=0):
-        self.display    = display
-        self.audio      = audio
-        self.leds       = leds
-        self.buttons    = buttons
-        self.assets     = assets_mgr
-        self.score      = 0
-        self.lives      = 3
-        self.level      = 1
-        self.best_score = best_score   # persisted high score, at game start
-        self._running   = False
-        self._quit      = False
+    def __init__(self, display, audio, leds, buttons, assets_mgr,
+                 best_score=0, best_time_s=None):
+        self.display      = display
+        self.audio        = audio
+        self.leds         = leds
+        self.buttons      = buttons
+        self.assets       = assets_mgr
+        self.score        = 0
+        self.lives        = 3
+        self.level        = 1
+        self.best_score   = best_score      # persisted high score, at game start
+        self.best_time_s  = best_time_s     # persisted best clean-run time, if any
+        self._running     = False
+        self._quit        = False
 
     # ── Required overrides ───────────────────────────────────────
 
