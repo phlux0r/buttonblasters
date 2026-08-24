@@ -102,7 +102,7 @@ class SettingsScreen:
         await display.draw_progress_bar(vol, x=bar_x, y=200,
                                         w=bar_w, h=20, color=col)
 
-        hint = "- / + on side buttons - BACK to exit"
+        hint = "PRESS HOME TO GO BACK"
         await display.text_main(hint, max(4, cx - len(hint) * 4),
                                 260, rgb(140, 140, 140), BLACK, scale=1)
 

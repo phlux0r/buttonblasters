@@ -66,12 +66,7 @@ class Menu:
         buttons.clear()
         if leds.ready:
             leds.start_effect(leds.idle_rainbow())
-        # Static PREV/NEXT arrow cards — painted ONCE (button screens retain),
-        # so scrolling only repaints the two dynamic preview screens.
-        if not await display.paint_btn_bg(1, BTN_PREV_PATH):
-            await display.show_prev_indicator()
-        if not await display.paint_btn_bg(3, BTN_NEXT_PATH):
-            await display.show_next_indicator()
+        await self._render_prev_next()
         await self._render_full()
 
         while True:
@@ -117,6 +112,11 @@ class Menu:
                     await audio.play_sfx("menu_select.wav")
                     await settings_screen.run()
                     buttons.clear()
+                    # SettingsScreen overwrites BTN-1/BTN-3 with its -/+
+                    # graphics — _render_full() deliberately never touches
+                    # those two (see _render_prev_next()'s docstring), so
+                    # without this they'd be stuck showing -/+ forever.
+                    await self._render_prev_next()
                     await self._render_full()
                 # Lower half of main screen = launch selected game
                 elif ty > config.MAIN_H // 2:
@@ -133,6 +133,18 @@ class Menu:
                 await self._render_full()
 
     # ── Rendering ────────────────────────────────────────────────
+
+    async def _render_prev_next(self):
+        """Paint BTN-1/BTN-3's static PREV/NEXT arrow cards. Called once on
+        entering the menu, and again on returning from anything (e.g. the
+        settings screen) that overwrites those two screens with its own
+        content — _render_full() deliberately does NOT repaint these on
+        every scroll (only the two dynamic preview screens), so any caller
+        that puts something else on BTN-1/3 must restore them explicitly."""
+        if not await display.paint_btn_bg(1, BTN_PREV_PATH):
+            await display.show_prev_indicator()
+        if not await display.paint_btn_bg(3, BTN_NEXT_PATH):
+            await display.show_next_indicator()
 
     async def _render_full(self):
         await self._render_main_card()
