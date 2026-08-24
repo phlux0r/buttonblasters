@@ -381,6 +381,13 @@ class AudioManager:
         # No spi_bus locking/frequency management here — see the module
         # docstring's CLIP RESOLUTION note for why that trade was reverted.
         f = open(path, 'rb')
+        # Which of the three CLIP RESOLUTION ORDER tiers this actually
+        # resolved to isn't otherwise visible anywhere -- confirmed on
+        # hardware to cost real debugging time: a clip re-exported and
+        # updated on the SD card can still be shadowed by a same-named
+        # file in a higher-priority tier (Tier B per-game, or the shared
+        # littlefs root) that nobody remembered was there.
+        print(f"[audio] playing {path}")
         try:
             info = _read_wav_header(f)
             if info is None:
