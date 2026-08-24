@@ -277,7 +277,7 @@ class AppKernel:
                 time.ticks_ms(), self._last_input) // 1000
             if idle_s >= config.SCREEN_DIM_S and not self._dimmed:
                 if leds.ready:
-                    leds.set_brightness(0.05)
+                    leds.set_brightness(config.LED_IDLE_BRIGHTNESS)
                 self._dimmed = True
                 print("[kernel] idle — dimmed")
             if idle_s >= config.GAME_RETURN_IDLE_S:

@@ -158,9 +158,13 @@ AUDIO_BUF_BYTES   = 2048
 # Data via 74AHCT125 level shifter (3.3V → 5V).
 # 330Ω series resistor on data line.
 # Strip powered from VBUS (5V).
-PIN_LED_STRIP  = 20    # ✓ confirmed GP20
-NUM_LEDS       = 8     # current strip — may expand later
-LED_BRIGHTNESS = 0.35
+PIN_LED_STRIP     = 20    # ✓ confirmed GP20
+NUM_LEDS          = 8     # current strip — may expand later
+LED_BRIGHTNESS    = 0.35
+LED_IDLE_BRIGHTNESS = 0.02   # after SCREEN_DIM_S idle — was hardcoded 0.05
+                              # in core/kernel.py; dropped further since it
+                              # only needs to be a faint ambient glow, not
+                              # a visible effect, while idle on battery
 
 # ── Haptic motor ✓ confirmed ─────────────────────────────────────
 # ERM coin motor via 2N3904 NPN transistor.
