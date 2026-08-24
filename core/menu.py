@@ -26,6 +26,7 @@ from drivers.audio import audio
 from drivers.leds import leds
 from drivers.buttons import buttons, BTN_PREV, BTN_NEXT, BTN_BACK
 from drivers.assets import assets
+from drivers.battery import battery
 from core.settings import settings as settings_screen
 import config
 
@@ -291,16 +292,17 @@ class Menu:
             await self._render_btn_game_procedural(slot, game_idx)
 
     async def _render_battery(self, bg):
-        if config.PIN_BAT_ADC is None:
+        # Uses the bench-calibrated drivers/battery.py (VSYS_ADC_RATIO=2.55,
+        # the safe-read dance for GP29's shared SPI-CLK pin) instead of a
+        # separate inline ADC read -- this used to hardcode ratio=2 here,
+        # a stale value from before calibration, reporting a materially
+        # wrong percentage than the one the actual driver/tests confirmed.
+        if not battery.ready:
             return
         try:
-            from machine import ADC
-            adc = ADC(config.PIN_BAT_ADC)
-            raw = adc.read_u16()
-            v   = (raw / 65535 * 3.3) * 2
-            pct = int((v - config.BAT_EMPTY_V) /
-                      (config.BAT_FULL_V - config.BAT_EMPTY_V) * 100)
-            pct = max(0, min(100, pct))
+            pct = battery.read_percent()
+            if pct < 0:
+                return
             col = (GREEN if pct > 30 else
                    YELLOW if pct > 15 else rgb(255, 60, 0))
             bw = 28; filled = bw * pct // 100
