@@ -24,19 +24,20 @@
 #   3. GP25-high dance doesn't crash even though WLAN is never active here
 #   4. Percentage interpolation between BAT_EMPTY_V/BAT_FULL_V
 #
-# ✓ BENCH-CONFIRMED, two data points — the widely-documented Pico-W-family
-# divider of 3 was WRONG for this board (first run: ~94% vs a real ~17%,
-# not a small error). Two calibration points so far:
-#   3.45V multimeter <-> raw≈27520  (implies ratio ≈2.49 alone)
-#   3.71V multimeter <-> raw≈28257  (implies ratio ≈2.61 alone)
-# They don't fully agree (~4.7% apart) — likely LiPo "surface charge"
-# settling right after charging rather than a flaw in the ratio itself.
-# Combined zero-intercept fit: ≈2.55 (used below), still ~±0.08V residual
-# at each point — good enough for a coarse indicator, not lab-grade. For
-# tighter calibration: let the battery rest 15+ min post-charge, take
-# both readings close together in time, and get a third point further
-# away (e.g. near BAT_EMPTY_V ~3.3V) for a real linear fit. See
-# config.VSYS_ADC_RATIO.
+# ✓ BENCH-CONFIRMED, recalibrated after D1 (the reverse-blocking Schottky
+# diode in the battery->VSYS path) made VSYS no longer the same node as
+# the battery terminals. IMPORTANT: this test's DIVIDER converts raw ->
+# VSYS voltage, NOT battery voltage -- on battery-only power, VSYS reads
+# ~0.37V (config.VSYS_DROP_V) below the battery's own terminal voltage
+# now (diode drop + switch/wiring). On USB power this test measures
+# something different again (VSYS dominated by VBUS through the Pico's
+# own internal diode, not the battery path at all) -- for real battery
+# calibration, use tests/battery_calibration_log.py instead, which runs
+# untethered on battery power and logs to SD instead of the console.
+#
+# raw -> VSYS refit against 58 samples at VSYS=3.80V (measured directly
+# at the pin, battery at 4.17V under light load): ratio ≈2.985. See
+# config.py's battery section for the full writeup.
 # ─────────────────────────────────────────────────────────────────
 
 import time
@@ -49,10 +50,11 @@ print("=" * 48)
 
 ADC_MAX   = 65535       # read_u16() full scale
 ADC_VREF  = 3.3         # RP2350 ADC reference voltage
-DIVIDER   = 2.55        # ✓ bench-confirmed on this board, 2-point fit (was 3 — wrong, see header)
+DIVIDER   = 2.985       # ✓ bench-confirmed on this board -- converts raw to VSYS, not battery voltage (see header)
 
-BAT_FULL_V  = 4.2
-BAT_EMPTY_V = 3.3
+VSYS_DROP_V = 0.37      # battery -> VSYS: diode + switch/wiring (see header)
+BAT_FULL_V  = 4.2 - VSYS_DROP_V    # in VSYS-domain terms, to match read_voltage()
+BAT_EMPTY_V = 3.3 - VSYS_DROP_V
 
 print("\n[1] GP25 init (WiFi chip-select line — drive HIGH to deselect)...")
 wifi_cs = Pin(25, Pin.OUT, value=1)

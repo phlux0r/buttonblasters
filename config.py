@@ -183,27 +183,33 @@ HAPTIC_PULSE_MS = 60
 # board. See tests/test_16_battery_vsys.py and drivers/battery.py.
 PIN_BAT_ADC    = 29    # GP29 / ADC3 — VSYS monitor (see note above)
 PIN_WIFI_CS    = 25    # held HIGH before each battery read (see note above)
-# ✓ BENCH-CONFIRMED, calibrated from TWO data points — the widely-
-# documented Pico-W-family divider ratio of 3 was WRONG for this board.
-#   Point 1: multimeter 3.45V, raw≈27520  -> implies ratio ≈2.49 alone
-#   Point 2: multimeter 3.71V, raw≈28257  -> implies ratio ≈2.61 alone
-# The two don't fully agree (~4.7% apart) — likely LiPo "surface charge"
-# settling right after charging (voltage can drift for 10-15 min post-
-# charge) meaning the multimeter and ADC readings weren't sampling the
-# exact same true voltage, not necessarily a flaw in this ratio itself.
-# Zero-intercept least-squares fit across both points: ≈2.55 (used
-# below) — still leaves ~±0.08V residual error at each point, so treat
-# this as "good enough for a coarse indicator," not lab-grade precision.
-# Regardless of the exact value, this is a MASSIVE improvement over the
-# original ratio=3: that reported ~94% for a battery actually near 20%,
-# right next to BAT_WARN_PCT. For tighter calibration: let the battery
-# rest 15+ min after charging before taking a reference reading, take
-# the multimeter and test-script readings as close together in time as
-# possible, and get a third point further from these two (e.g. near
-# BAT_EMPTY_V, ~3.3V) for a real linear fit instead of two close points.
-VSYS_ADC_RATIO = 2.55
-BAT_FULL_V     = 4.2
-BAT_EMPTY_V    = 3.3
+# ✓ BENCH-CONFIRMED — RECALIBRATED after D1 (the reverse-blocking Schottky
+# diode added in the battery->VSYS path, to stop USB backfeeding into the
+# battery) made VSYS no longer the same node as the battery terminals.
+# The original VSYS_ADC_RATIO=2.55 was calibrated with the battery wired
+# straight to VSYS, no diode -- once D1 went in, that ratio was still
+# internally correct (it converts raw -> the real VSYS voltage), but
+# BAT_FULL_V/BAT_EMPTY_V were being compared against VSYS as if VSYS
+# still equalled the battery's own terminal voltage, so a fully-charged
+# battery could read as empty.
+#
+# Direct measurement on the as-built board (battery at 4.17V under the
+# calibration script's light load): VSYS = 3.80V, diode drop = 0.33V
+# (textbook for a 1N5819), remaining ~0.04V from switch/wiring — nothing
+# unexpected, no bad connection. VSYS_DROP_V is that whole battery->VSYS
+# gap; BAT_FULL_V/BAT_EMPTY_V stay in battery-terminal-voltage units
+# (meaning what their names say) and drivers/battery.py subtracts
+# VSYS_DROP_V from them before comparing against the VSYS-domain reading.
+#
+# raw -> VSYS ratio refit against this run's 58 samples (mean raw=25280.2,
+# VSYS=3.80V measured directly at the pin): 2.985. See
+# tests/battery_calibration_log.py for how to recalibrate further (a
+# second point nearer BAT_EMPTY_V would tighten this the same way the
+# original 2-point fit wanted a third point).
+VSYS_ADC_RATIO = 2.985
+VSYS_DROP_V    = 0.37   # battery -> VSYS: D1's forward drop + switch/wiring
+BAT_FULL_V     = 4.2    # battery's own terminal voltage, NOT VSYS
+BAT_EMPTY_V    = 3.3    # battery's own terminal voltage, NOT VSYS
 BAT_WARN_PCT   = 15
 
 # ── Dead / reserved pins ─────────────────────────────────────────

@@ -9,15 +9,16 @@
 # the documented safe-read dance (GP25 held high) as cheap insurance,
 # matching the standard technique for this board.
 #
-# ✓ BENCH-CONFIRMED (two data points) — the widely-documented Pico-W-family
-# divider ratio of 3 was WRONG for this board: reported ~94% charge for a
-# battery a multimeter measured at ~17%. Two calibration points (3.45V and
-# 3.71V) don't fully agree with each other (~4.7% apart, likely LiPo
-# "surface charge" settling right after charging, not a flaw in the
-# ratio) — combined fit is config.VSYS_ADC_RATIO=2.55, good enough for a
-# coarse indicator, not lab-grade precision. See
-# tests/test_16_battery_vsys.py for the full calibration history and how
-# to tighten it further (a third point away from these two).
+# ✓ BENCH-CONFIRMED, recalibrated after D1 (the reverse-blocking Schottky
+# diode in the battery->VSYS path) made VSYS no longer the same node as
+# the battery terminals. read_voltage() below returns the real VSYS
+# voltage (config.VSYS_ADC_RATIO=2.985, refit for the as-built board);
+# read_percent() subtracts config.VSYS_DROP_V (the measured battery->VSYS
+# gap — diode drop + switch/wiring, ~0.37V on this board) from
+# BAT_FULL_V/BAT_EMPTY_V before comparing, since those two stay in
+# battery-terminal-voltage units. See config.py's battery section for
+# the full recalibration writeup and tests/battery_calibration_log.py
+# for how to tighten either value further.
 
 import config
 
@@ -65,18 +66,22 @@ class BatteryMonitor:
 
     def read_percent(self) -> int:
         """0-100, linearly interpolated between config.BAT_EMPTY_V and
-        config.BAT_FULL_V. Not a true LiPo discharge curve (which is
-        non-linear) — fine for a coarse indicator, not a precision gauge.
-        Returns -1 if the monitor isn't ready."""
+        config.BAT_FULL_V — both battery-terminal-voltage thresholds, so
+        config.VSYS_DROP_V is subtracted from them here to compare against
+        read_voltage()'s VSYS-domain reading on equal terms. Not a true
+        LiPo discharge curve (which is non-linear) — fine for a coarse
+        indicator, not a precision gauge. Returns -1 if not ready."""
         if not self._ready:
             return -1
-        v = self.read_voltage()
-        if v >= config.BAT_FULL_V:
+        v          = self.read_voltage()
+        vsys_full  = config.BAT_FULL_V  - config.VSYS_DROP_V
+        vsys_empty = config.BAT_EMPTY_V - config.VSYS_DROP_V
+        if v >= vsys_full:
             return 100
-        if v <= config.BAT_EMPTY_V:
+        if v <= vsys_empty:
             return 0
-        span = config.BAT_FULL_V - config.BAT_EMPTY_V
-        return int((v - config.BAT_EMPTY_V) / span * 100)
+        span = vsys_full - vsys_empty
+        return int((v - vsys_empty) / span * 100)
 
     @property
     def low(self) -> bool:
