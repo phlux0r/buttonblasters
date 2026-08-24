@@ -109,6 +109,14 @@ async def install(game_id):
     for sd_path, size in _walk_sd(sd_root):
         cache_path = "/assets" + sd_path[len("/sd/assets"):]
         if _free_bytes() - size < _SAFETY_MARGIN:
+            # Which file, not just a count -- a skipped file falls back to
+            # per-strip SD streaming at 400kHz every time it's shown
+            # (see open_background()'s fallback path), which is dramatically
+            # slower than a flash read. Without the path here, that shows up
+            # as "one specific screen is slow" with no way to tell which
+            # asset is actually the cause short of guessing from file sizes.
+            print("[game_cache] %s: skipped (low space, %dB needed): %s"
+                  % (game_id, size, cache_path))
             skipped += 1
             continue
         try:
