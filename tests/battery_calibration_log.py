@@ -78,8 +78,7 @@ def _mount_sd() -> bool:
                      sck=Pin(config.PIN_SCK),
                      mosi=Pin(config.PIN_MOSI),
                      miso=Pin(config.PIN_MISO))
-        sd = SDCard(sd_spi, cs, baudrate=400_000)   # confirmed rate, see
-                                                     # drivers/assets.py
+        sd = SDCard(sd_spi, cs, baudrate=config.SPI_FREQ_SD_DATA)
         os.mount(sd, "/sd")
         return True
     except Exception as e:

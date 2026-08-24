@@ -48,9 +48,20 @@ SPI_FREQ_DISPLAY = 48_000_000    # starting step — tune upward per notes above
 # SD stays slow and decoupled from the display clock — the shared bus
 # switches frequency per-device (see drivers/spi_bus.py), so a fast display
 # does NOT force a fast SD. Do NOT raise this to match SPI_FREQ_DISPLAY.
-SPI_FREQ_SD_INIT =    400_000
-SPI_FREQ_SD_DATA =    400_000   # confirmed breadboard ceiling — EIO at
-                                 # >=1.32MHz. Target 10MHz on soldered board.
+SPI_FREQ_SD_INIT =    400_000    # SD spec's power-up negotiation speed —
+                                  # NOT the breadboard limitation below,
+                                  # leave this one alone regardless of build
+SPI_FREQ_SD_DATA =  10_000_000   # was 400kHz (confirmed breadboard ceiling,
+                                  # EIO at >=1.32MHz) -- now soldered, trying
+                                  # the target this was always aiming for.
+                                  # SPI_FREQ_DISPLAY runs 48MHz clean on this
+                                  # same bus/board, so the wiring itself isn't
+                                  # the limiting factor. NOT yet bench-confirmed
+                                  # at this exact value -- run test_sd_card.py
+                                  # and watch for EIO/"timeout waiting for v2
+                                  # card"; step back down (try 4_000_000, then
+                                  # 1_000_000) if it throws rather than assuming
+                                  # 10MHz is safe untested.
 
 # ── ILI9488 main display (4.0" IPS 320×480) ─────────────────────
 PIN_CS_MAIN  = 6
