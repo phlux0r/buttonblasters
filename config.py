@@ -208,13 +208,18 @@ PIN_WIFI_CS    = 25    # held HIGH before each battery read (see note above)
 # still equalled the battery's own terminal voltage, so a fully-charged
 # battery could read as empty.
 #
-# Direct measurement on the as-built board (battery at 4.17V under the
-# calibration script's light load): VSYS = 3.80V, diode drop = 0.33V
-# (textbook for a 1N5819), remaining ~0.04V from switch/wiring — nothing
-# unexpected, no bad connection. VSYS_DROP_V is that whole battery->VSYS
-# gap; BAT_FULL_V/BAT_EMPTY_V stay in battery-terminal-voltage units
-# (meaning what their names say) and drivers/battery.py subtracts
-# VSYS_DROP_V from them before comparing against the VSYS-domain reading.
+# Direct measurement on the as-built board: battery 4.17V -> VSYS 3.80V
+# (drop 0.37V, of which 0.33V is the diode itself, textbook for a
+# 1N5819) and separately battery 3.94V -> VSYS 3.58V (drop 0.36V) --
+# two independent points agreeing to 10mV confirms this drop is a
+# roughly constant offset across the range, not something that scales
+# with battery voltage or current draw, which is what justifies
+# treating it as a fixed additive constant here rather than needing a
+# proper current-dependent model. VSYS_DROP_V is that whole
+# battery->VSYS gap (averaged: 0.365V); BAT_FULL_V/BAT_EMPTY_V stay in
+# battery-terminal-voltage units (meaning what their names say) and
+# drivers/battery.py subtracts VSYS_DROP_V from them before comparing
+# against the VSYS-domain reading.
 #
 # raw -> VSYS ratio, now a real TWO-point zero-intercept fit:
 #   mean raw=25280.2 <-> VSYS=3.80V (58 samples)
@@ -227,7 +232,8 @@ PIN_WIFI_CS    = 25    # held HIGH before each battery read (see note above)
 # board. See tests/battery_calibration_log.py for how to add a third
 # point nearer BAT_EMPTY_V if tighter precision is ever needed there.
 VSYS_ADC_RATIO = 2.988
-VSYS_DROP_V    = 0.37   # battery -> VSYS: D1's forward drop + switch/wiring
+VSYS_DROP_V    = 0.365  # battery -> VSYS: D1's forward drop + switch/wiring,
+                         # averaged from two points agreeing to 10mV (see above)
 BAT_FULL_V     = 4.2    # battery's own terminal voltage, NOT VSYS
 BAT_EMPTY_V    = 3.3    # battery's own terminal voltage, NOT VSYS
 BAT_WARN_PCT   = 15

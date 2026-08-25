@@ -28,7 +28,7 @@
 # diode in the battery->VSYS path) made VSYS no longer the same node as
 # the battery terminals. IMPORTANT: this test's DIVIDER converts raw ->
 # VSYS voltage, NOT battery voltage -- on battery-only power, VSYS reads
-# ~0.37V (config.VSYS_DROP_V) below the battery's own terminal voltage
+# ~0.365V (config.VSYS_DROP_V) below the battery's own terminal voltage
 # now (diode drop + switch/wiring). On USB power this test measures
 # something different again (VSYS dominated by VBUS through the Pico's
 # own internal diode, not the battery path at all) -- for real battery
@@ -53,7 +53,7 @@ ADC_MAX   = 65535       # read_u16() full scale
 ADC_VREF  = 3.3         # RP2350 ADC reference voltage
 DIVIDER   = 2.988       # ✓ bench-confirmed, 2-point zero-intercept fit -- converts raw to VSYS, not battery voltage (see header)
 
-VSYS_DROP_V = 0.37      # battery -> VSYS: diode + switch/wiring (see header)
+VSYS_DROP_V = 0.365     # battery -> VSYS: diode + switch/wiring (see header)
 BAT_FULL_V  = 4.2 - VSYS_DROP_V    # in VSYS-domain terms, to match read_voltage()
 BAT_EMPTY_V = 3.3 - VSYS_DROP_V
 
