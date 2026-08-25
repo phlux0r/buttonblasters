@@ -40,10 +40,9 @@ _NOSD_BG = "/assets/sys/bgm_nosd_480x320.bz"
 class AppKernel:
 
     def __init__(self):
-        self._menu       = None
-        self._scores     = {}
-        self._last_input = time.ticks_ms()
-        self._dimmed     = False
+        self._menu   = None
+        self._scores = {}
+        self._dimmed = False
 
     async def init(self):
         print("[kernel] boot start")
@@ -201,7 +200,6 @@ class AppKernel:
 
         while True:
             game_cls = await self._menu.run()
-            self._touch()
 
             saved      = self._scores.get(game_cls.GAME_ID, {})
             best_score = saved.get("score", 0)
@@ -250,7 +248,6 @@ class AppKernel:
                 print(f"[kernel] game crashed: {e}")
                 result = GameResult(score=0, completed=False)
 
-            self._touch()
             await self._save_result(game.GAME_ID, result)
             self._menu.update_result(game.GAME_ID,
                                      result.score, result.stars)
@@ -273,10 +270,20 @@ class AppKernel:
             leds.start_effect(leds.flash(80, 80, 255, count=2))
 
     async def _idle_watchdog(self):
+        # Polls buttons.last_input_ms -- the shared queue's own timestamp,
+        # updated on EVERY physical button press or touch event regardless
+        # of which loop consumes it (menu navigation, in-game play, an end
+        # screen's wait) -- rather than relying on call sites to each
+        # remember to report activity back to the kernel. That used to be
+        # self._last_input, reset only from two spots (a game just
+        # selected, a game just finished): confirmed on hardware that
+        # meant menu navigation and in-game play never reset the idle
+        # timer at all, so the button screens dimmed and then nothing
+        # short of actually launching a game brought them back.
         while True:
             await asyncio.sleep_ms(5000)
             idle_s = time.ticks_diff(
-                time.ticks_ms(), self._last_input) // 1000
+                time.ticks_ms(), buttons.last_input_ms) // 1000
             if idle_s >= config.SCREEN_DIM_S and not self._dimmed:
                 if leds.ready:
                     leds.set_brightness(config.LED_IDLE_BRIGHTNESS)
@@ -287,23 +294,12 @@ class AppKernel:
                 display.set_btn_backlight(False)
                 self._dimmed = True
                 print("[kernel] idle — dimmed")
-            # NOTE: GAME_RETURN_IDLE_S (60s) used to reset _last_input here
-            # unconditionally once idle crossed it -- since it's LESS than
-            # SCREEN_DIM_S (120s), that reset fired first, every 5s tick,
-            # forever, so idle_s could never reach 120s and the dim branch
-            # above was permanently unreachable. GAME_RETURN_IDLE_S isn't
-            # used anywhere else in the codebase -- there's no actual
-            # "return to menu after idle mid-game" behavior implemented,
-            # just this dead reset. Removed rather than fixed in place,
-            # since building that real feature is a separate decision.
-
-    def _touch(self):
-        self._last_input = time.ticks_ms()
-        if self._dimmed:
-            if leds.ready:
-                leds.set_brightness(config.LED_BRIGHTNESS)
-            display.set_btn_backlight(True)
-            self._dimmed = False
+            elif idle_s < config.SCREEN_DIM_S and self._dimmed:
+                if leds.ready:
+                    leds.set_brightness(config.LED_BRIGHTNESS)
+                display.set_btn_backlight(True)
+                self._dimmed = False
+                print("[kernel] input resumed — undimmed")
 
     # scores.json lives on the SD card, which shares SPI0 with the displays.
     # Every read/write must run inside spi_bus.raw() at the SD-safe clock —

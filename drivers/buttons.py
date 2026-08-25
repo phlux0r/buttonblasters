@@ -44,11 +44,25 @@ from drivers.touch import TOUCH_TAP, TOUCH_LONG_PRESS, TOUCH_SWIPE
 
 
 class _SimpleQueue:
-    """Minimal async-compatible queue for MicroPython."""
+    """Minimal async-compatible queue for MicroPython.
+
+    Also the one true choke point every input event passes through --
+    physical button presses (ButtonManager._post) and touch events
+    (TouchDriver._post, sharing this same queue instance via
+    attach_touch()) both land here, whether they're consumed by the
+    menu's own event loop, a game's, or an end screen's. last_put_ms
+    tracks activity centrally for exactly that reason: any call site
+    that reads its OWN "last input" timestamp instead (like
+    AppKernel used to) silently misses every event handled inside a
+    nested loop it doesn't own -- confirmed on hardware as menu
+    navigation and in-game play never resetting the idle-dim timer at
+    all, only actually launching a game or finishing one did.
+    """
     def __init__(self, maxsize=32):
-        self._buf     = []
-        self._maxsize = maxsize
-        self._ev      = asyncio.Event()
+        self._buf        = []
+        self._maxsize    = maxsize
+        self._ev         = asyncio.Event()
+        self.last_put_ms = time.ticks_ms()
 
     def empty(self):
         return len(self._buf) == 0
@@ -59,6 +73,7 @@ class _SimpleQueue:
     def put_nowait(self, item):
         if not self.full():
             self._buf.append(item)
+            self.last_put_ms = time.ticks_ms()
             self._ev.set()
 
     def get_nowait(self):
@@ -70,6 +85,7 @@ class _SimpleQueue:
         while self.full():
             await asyncio.sleep_ms(5)
         self._buf.append(item)
+        self.last_put_ms = time.ticks_ms()
         self._ev.set()
 
     async def get(self):
@@ -281,6 +297,15 @@ class ButtonManager:
                 return "swipe", evt
 
     # ── Utility ───────────────────────────────────────────────────
+
+    @property
+    def last_input_ms(self):
+        """time.ticks_ms() of the most recent event through the shared
+        queue — physical button OR touch, regardless of which loop
+        consumed it. The one central source of truth for idle tracking;
+        see _SimpleQueue's docstring for why this replaced callers each
+        tracking their own "last input" timestamp."""
+        return self._queue.last_put_ms if self._queue else time.ticks_ms()
 
     @property
     def touch_pos(self):
