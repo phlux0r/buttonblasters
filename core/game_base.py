@@ -125,6 +125,19 @@ class BaseGame:
         """Block until a screen tap. Returns (x, y)."""
         return await self.buttons.get_tap()
 
+    async def wait_or_timeout_back(self, coro):
+        """Await coro (an end-screen's wait-for-choice call) but return
+        "back" automatically after config.GAME_RETURN_IDLE_S of no input,
+        so a finished round-set doesn't sit waiting forever if the player
+        walked away. Deliberately for END-SCREEN waits only -- call sites
+        are each game's own _end_screen(), never anything mid-play.
+        Interrupting active play would be disruptive in a way a "Play
+        again?" prompt nobody's answering just isn't."""
+        try:
+            return await asyncio.wait_for(coro, config.GAME_RETURN_IDLE_S)
+        except asyncio.TimeoutError:
+            return "back"
+
     async def wait_tap_or_button(self):
         """Block until tap OR screen button press."""
         return await self.buttons.get_press_or_tap()

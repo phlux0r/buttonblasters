@@ -416,7 +416,7 @@ class ShapeMatchGame(BaseGame):
         # round-set (all 3 rounds), not at carousel-exit time.
         await self.announce_round_complete()
 
-        return await self._wait_end_choice()
+        return await self.wait_or_timeout_back(self._wait_end_choice())
 
     async def _wait_end_choice(self):
         self.buttons.clear()

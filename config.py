@@ -247,8 +247,9 @@ BAT_WARN_PCT   = 15
 
 # ── UX timing ────────────────────────────────────────────────────
 MENU_SCROLL_MS     = 120
-GAME_RETURN_IDLE_S = 60
-SCREEN_DIM_S       = 120
+GAME_RETURN_IDLE_S = 60   # idle timeout on a game's END SCREEN only (see
+                          # BaseGame.wait_or_timeout_back) -- never mid-play
+SCREEN_DIM_S       = 60
 
 # ── Countdown text scale ─────────────────────────────────────────
 # Was 10 (core/game_base.py's "3-2-1-GO!" countdown). Single source of
