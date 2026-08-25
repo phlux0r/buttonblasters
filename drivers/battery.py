@@ -29,10 +29,26 @@ class BatteryMonitor:
     _ADC_MAX  = 65535   # read_u16() full scale
     _ADC_VREF = 3.3     # RP2350 ADC reference voltage
 
+    # Two-layer smoothing -- confirmed on hardware that a raw single-sample
+    # read visibly jumps with the display's own SPI load: navigating the
+    # menu measurably sags VSYS for the instant a redraw is busy, and it
+    # "recharges" back the moment things go idle again. The battery hasn't
+    # actually changed that fast either way -- only the reading has.
+    #   _SAMPLES:   averaged within one read_voltage() call, cheap ADC/
+    #               electrical noise reduction.
+    #   _EMA_ALPHA: blended ACROSS calls (each menu redraw is one call),
+    #               so a single busy-redraw sample only nudges the
+    #               displayed value a little instead of snapping straight
+    #               to it -- rides through the sag/recover cycle instead
+    #               of visibly tracking it.
+    _SAMPLES   = 8
+    _EMA_ALPHA = 0.15
+
     def __init__(self):
         self._ready   = False
         self._adc     = None
         self._wifi_cs = None
+        self._ema_v   = None
         self._init_hardware()
 
     def _init_hardware(self):
@@ -54,15 +70,24 @@ class BatteryMonitor:
         return self._ready
 
     def read_voltage(self) -> float:
-        """Sample VSYS. Holds the wireless chip's CS line high (deselected)
-        during the read — a no-op in practice since this firmware never
-        drives WiFi, but matches the documented safe-read pattern for this
-        board's shared ADC3/SPI-CLK pin."""
+        """Sample VSYS (averaged + EMA-smoothed, see class docstring).
+        Holds the wireless chip's CS line high (deselected) during the
+        read — a no-op in practice since this firmware never drives WiFi,
+        but matches the documented safe-read pattern for this board's
+        shared ADC3/SPI-CLK pin."""
         if not self._ready:
             return 0.0
         self._wifi_cs.value(1)
-        raw = self._adc.read_u16()
-        return raw * (self._ADC_VREF * config.VSYS_ADC_RATIO / self._ADC_MAX)
+        total = 0
+        for _ in range(self._SAMPLES):
+            total += self._adc.read_u16()
+        raw = total / self._SAMPLES
+        v   = raw * (self._ADC_VREF * config.VSYS_ADC_RATIO / self._ADC_MAX)
+        if self._ema_v is None:
+            self._ema_v = v
+        else:
+            self._ema_v += self._EMA_ALPHA * (v - self._ema_v)
+        return self._ema_v
 
     def read_percent(self) -> int:
         """0-100, linearly interpolated between config.BAT_EMPTY_V and
