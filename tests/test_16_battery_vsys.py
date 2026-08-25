@@ -35,9 +35,10 @@
 # calibration, use tests/battery_calibration_log.py instead, which runs
 # untethered on battery power and logs to SD instead of the console.
 #
-# raw -> VSYS refit against 58 samples at VSYS=3.80V (measured directly
-# at the pin, battery at 4.17V under light load): ratio ≈2.985. See
-# config.py's battery section for the full writeup.
+# raw -> VSYS: now a real two-point zero-intercept fit (3.80V and
+# 3.58V, measured directly at the pin), independently agreeing to
+# ~0.2% -- ratio 2.988, ~3.5mV residual at each point. See config.py's
+# battery section for the full writeup.
 # ─────────────────────────────────────────────────────────────────
 
 import time
@@ -50,7 +51,7 @@ print("=" * 48)
 
 ADC_MAX   = 65535       # read_u16() full scale
 ADC_VREF  = 3.3         # RP2350 ADC reference voltage
-DIVIDER   = 2.985       # ✓ bench-confirmed on this board -- converts raw to VSYS, not battery voltage (see header)
+DIVIDER   = 2.988       # ✓ bench-confirmed, 2-point zero-intercept fit -- converts raw to VSYS, not battery voltage (see header)
 
 VSYS_DROP_V = 0.37      # battery -> VSYS: diode + switch/wiring (see header)
 BAT_FULL_V  = 4.2 - VSYS_DROP_V    # in VSYS-domain terms, to match read_voltage()
@@ -92,8 +93,8 @@ except KeyboardInterrupt:
     pass
 
 print("\n" + "=" * 48)
-print("  TEST 16 complete. DIVIDER=2.55 is a 2-point fit (3.45V and")
-print("  3.71V) that still leaves ~+/-0.08V residual error at each")
-print("  point. A third reading further away (e.g. near BAT_EMPTY_V,")
-print("  ~3.3V), taken 15+ min after any charging, would tighten this.")
+print("  TEST 16 complete. DIVIDER=2.988 is a 2-point zero-intercept fit")
+print("  (VSYS 3.80V and 3.58V) with only ~3.5mV residual at each point.")
+print("  A third reading nearer BAT_EMPTY_V (~2.93V in VSYS terms) would")
+print("  tighten this further if ever needed. See config.py.")
 print("=" * 48)

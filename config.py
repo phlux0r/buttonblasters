@@ -216,12 +216,17 @@ PIN_WIFI_CS    = 25    # held HIGH before each battery read (see note above)
 # (meaning what their names say) and drivers/battery.py subtracts
 # VSYS_DROP_V from them before comparing against the VSYS-domain reading.
 #
-# raw -> VSYS ratio refit against this run's 58 samples (mean raw=25280.2,
-# VSYS=3.80V measured directly at the pin): 2.985. See
-# tests/battery_calibration_log.py for how to recalibrate further (a
-# second point nearer BAT_EMPTY_V would tighten this the same way the
-# original 2-point fit wanted a third point).
-VSYS_ADC_RATIO = 2.985
+# raw -> VSYS ratio, now a real TWO-point zero-intercept fit:
+#   mean raw=25280.2 <-> VSYS=3.80V (58 samples)
+#   mean raw=23773.0 <-> VSYS=3.58V (16 samples, screen showing ~50%)
+# The two points independently imply ratios of 2.9851 and 2.9906 --
+# only ~0.2% apart, versus the original pre-D1 calibration's two points
+# disagreeing by ~4.7%. Least-squares zero-intercept fit: 2.9877, with
+# residuals of only ~3.5mV at each point -- confirms the simple
+# proportional model (no intercept term needed) is accurate for this
+# board. See tests/battery_calibration_log.py for how to add a third
+# point nearer BAT_EMPTY_V if tighter precision is ever needed there.
+VSYS_ADC_RATIO = 2.988
 VSYS_DROP_V    = 0.37   # battery -> VSYS: D1's forward drop + switch/wiring
 BAT_FULL_V     = 4.2    # battery's own terminal voltage, NOT VSYS
 BAT_EMPTY_V    = 3.3    # battery's own terminal voltage, NOT VSYS
