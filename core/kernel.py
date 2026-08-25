@@ -287,8 +287,15 @@ class AppKernel:
                 display.set_btn_backlight(False)
                 self._dimmed = True
                 print("[kernel] idle — dimmed")
-            if idle_s >= config.GAME_RETURN_IDLE_S:
-                self._last_input = time.ticks_ms()
+            # NOTE: GAME_RETURN_IDLE_S (60s) used to reset _last_input here
+            # unconditionally once idle crossed it -- since it's LESS than
+            # SCREEN_DIM_S (120s), that reset fired first, every 5s tick,
+            # forever, so idle_s could never reach 120s and the dim branch
+            # above was permanently unreachable. GAME_RETURN_IDLE_S isn't
+            # used anywhere else in the codebase -- there's no actual
+            # "return to menu after idle mid-game" behavior implemented,
+            # just this dead reset. Removed rather than fixed in place,
+            # since building that real feature is a separate decision.
 
     def _touch(self):
         self._last_input = time.ticks_ms()
