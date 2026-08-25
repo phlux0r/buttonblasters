@@ -13,7 +13,7 @@
 import asyncio
 import framebuf
 import micropython
-from drivers.display import ILI9488, ST7789
+from drivers.display import ILI9488, ST7789, set_btn_backlight
 from drivers.assets import assets
 from drivers import flash_assets
 from core import game_cache
@@ -152,6 +152,12 @@ class DisplayManager:
         for i, d in enumerate(self.btns):
             d.init_blocking()
             print(f"[display] BTN-{i} ST7789 ready")
+
+    def set_btn_backlight(self, on: bool):
+        """Turn the 4 button screens' shared backlight (GP13) on/off. The
+        main ILI9488's backlight has no such control -- it's hardwired to
+        3.3V -- so this is the one real display-power lever available."""
+        set_btn_backlight(on)
 
     # ── Fill helpers ─────────────────────────────────────────────
 

@@ -280,6 +280,11 @@ class AppKernel:
             if idle_s >= config.SCREEN_DIM_S and not self._dimmed:
                 if leds.ready:
                     leds.set_brightness(config.LED_IDLE_BRIGHTNESS)
+                # The 4 button screens' shared backlight (GP13) is a real
+                # power lever, unlike the main ILI9488's backlight (wired
+                # straight to 3.3V, no GPIO, can never be switched off
+                # regardless of what firmware does).
+                display.set_btn_backlight(False)
                 self._dimmed = True
                 print("[kernel] idle — dimmed")
             if idle_s >= config.GAME_RETURN_IDLE_S:
@@ -290,6 +295,7 @@ class AppKernel:
         if self._dimmed:
             if leds.ready:
                 leds.set_brightness(config.LED_BRIGHTNESS)
+            display.set_btn_backlight(True)
             self._dimmed = False
 
     # scores.json lives on the SD card, which shares SPI0 with the displays.

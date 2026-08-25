@@ -199,6 +199,15 @@ def _ensure_blk():
         _blk_pin = Pin(config.PIN_BLK_BTN, Pin.OUT, value=1)
 
 
+def set_btn_backlight(on: bool):
+    """All 4 button screens share one backlight line (GP13) -- unlike the
+    main ILI9488's backlight (hardwired to 3.3V, no GPIO, can never be
+    switched off), this one genuinely can be turned off to save power
+    while idle. Safe to call before any ST7789 has been constructed."""
+    _ensure_blk()
+    _blk_pin.value(1 if on else 0)
+
+
 class ST7789:
     """
     ST7789 1.69" button display driver.
