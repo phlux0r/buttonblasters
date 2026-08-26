@@ -44,7 +44,7 @@ _LOG_PATH   = "/sd/battery_calibration_log.txt"
 _INTERVAL_S = 2
 _ADC_MAX    = 65535
 _ADC_VREF   = 3.3
-_DIVIDER    = 2.988  # current best-known VSYS ratio (config.VSYS_ADC_RATIO)
+_DIVIDER    = 2.983  # current best-known VSYS ratio (config.VSYS_ADC_RATIO)
                       # -- logged raw value is what actually matters for
                       # recalibration, this column is just a live sanity check
 

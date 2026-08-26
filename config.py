@@ -210,30 +210,31 @@ PIN_WIFI_CS    = 25    # held HIGH before each battery read (see note above)
 #
 # Direct measurement on the as-built board: battery 4.17V -> VSYS 3.80V
 # (drop 0.37V, of which 0.33V is the diode itself, textbook for a
-# 1N5819) and separately battery 3.94V -> VSYS 3.58V (drop 0.36V) --
-# two independent points agreeing to 10mV confirms this drop is a
-# roughly constant offset across the range, not something that scales
-# with battery voltage or current draw, which is what justifies
-# treating it as a fixed additive constant here rather than needing a
-# proper current-dependent model. VSYS_DROP_V is that whole
-# battery->VSYS gap (averaged: 0.365V); BAT_FULL_V/BAT_EMPTY_V stay in
+# 1N5819), battery 3.94V -> VSYS 3.58V (drop 0.36V), and — on a
+# DIFFERENT physical cell, replaced after the first one turned out weak
+# — battery 3.28V (light load) -> VSYS 2.88V (drop 0.40V). Three points
+# across two different batteries agreeing within 40mV confirms both
+# that the drop is a roughly constant offset (not something that scales
+# with battery voltage/current, justifying the fixed-additive-constant
+# model) AND that VSYS_ADC_RATIO is a property of this BOARD, not the
+# specific cell behind it, exactly as expected since it's really
+# characterising the RP2350's own ADC/divider. VSYS_DROP_V is the
+# averaged battery->VSYS gap; BAT_FULL_V/BAT_EMPTY_V stay in
 # battery-terminal-voltage units (meaning what their names say) and
 # drivers/battery.py subtracts VSYS_DROP_V from them before comparing
 # against the VSYS-domain reading.
 #
-# raw -> VSYS ratio, now a real TWO-point zero-intercept fit:
-#   mean raw=25280.2 <-> VSYS=3.80V (58 samples)
-#   mean raw=23773.0 <-> VSYS=3.58V (16 samples, screen showing ~50%)
-# The two points independently imply ratios of 2.9851 and 2.9906 --
-# only ~0.2% apart, versus the original pre-D1 calibration's two points
-# disagreeing by ~4.7%. Least-squares zero-intercept fit: 2.9877, with
-# residuals of only ~3.5mV at each point -- confirms the simple
-# proportional model (no intercept term needed) is accurate for this
-# board. See tests/battery_calibration_log.py for how to add a third
-# point nearer BAT_EMPTY_V if tighter precision is ever needed there.
-VSYS_ADC_RATIO = 2.988
-VSYS_DROP_V    = 0.365  # battery -> VSYS: D1's forward drop + switch/wiring,
-                         # averaged from two points agreeing to 10mV (see above)
+# raw -> VSYS ratio, THREE-point zero-intercept fit:
+#   mean raw=25280.2 <-> VSYS=3.80V (58 samples, battery 1)
+#   mean raw=23773.0 <-> VSYS=3.58V (16 samples, battery 1, ~50% on screen)
+#   mean raw=19243.4 <-> VSYS=2.88V (13 samples, battery 2, showing empty)
+# Independently imply ratios of 2.9851 / 2.9906 / 2.9721 -- within ~0.6%
+# of each other even across the battery swap and down near BAT_EMPTY_V,
+# confirming the simple proportional model holds across the range this
+# app actually operates in. Averaged: 2.983.
+VSYS_ADC_RATIO = 2.983
+VSYS_DROP_V    = 0.377  # battery -> VSYS: D1's forward drop + switch/wiring,
+                         # averaged from three points, 0.36-0.40V (see above)
 BAT_FULL_V     = 4.2    # battery's own terminal voltage, NOT VSYS
 BAT_EMPTY_V    = 3.3    # battery's own terminal voltage, NOT VSYS
 BAT_WARN_PCT   = 15

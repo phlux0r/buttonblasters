@@ -12,7 +12,7 @@
 # ✓ BENCH-CONFIRMED, recalibrated after D1 (the reverse-blocking Schottky
 # diode in the battery->VSYS path) made VSYS no longer the same node as
 # the battery terminals. read_voltage() below returns the real VSYS
-# voltage (config.VSYS_ADC_RATIO=2.985, refit for the as-built board);
+# voltage (config.VSYS_ADC_RATIO=2.983, refit for the as-built board);
 # read_percent() subtracts config.VSYS_DROP_V (the measured battery->VSYS
 # gap — diode drop + switch/wiring, ~0.37V on this board) from
 # BAT_FULL_V/BAT_EMPTY_V before comparing, since those two stay in

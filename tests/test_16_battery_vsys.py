@@ -28,17 +28,17 @@
 # diode in the battery->VSYS path) made VSYS no longer the same node as
 # the battery terminals. IMPORTANT: this test's DIVIDER converts raw ->
 # VSYS voltage, NOT battery voltage -- on battery-only power, VSYS reads
-# ~0.365V (config.VSYS_DROP_V) below the battery's own terminal voltage
+# ~0.377V (config.VSYS_DROP_V) below the battery's own terminal voltage
 # now (diode drop + switch/wiring). On USB power this test measures
 # something different again (VSYS dominated by VBUS through the Pico's
 # own internal diode, not the battery path at all) -- for real battery
 # calibration, use tests/battery_calibration_log.py instead, which runs
 # untethered on battery power and logs to SD instead of the console.
 #
-# raw -> VSYS: now a real two-point zero-intercept fit (3.80V and
-# 3.58V, measured directly at the pin), independently agreeing to
-# ~0.2% -- ratio 2.988, ~3.5mV residual at each point. See config.py's
-# battery section for the full writeup.
+# raw -> VSYS: a three-point zero-intercept fit (3.80V, 3.58V, and
+# 2.88V near BAT_EMPTY_V -- the last on a different physical cell after
+# the first one turned out weak), independently agreeing within ~0.6%
+# -- ratio 2.983. See config.py's battery section for the full writeup.
 # ─────────────────────────────────────────────────────────────────
 
 import time
@@ -51,9 +51,9 @@ print("=" * 48)
 
 ADC_MAX   = 65535       # read_u16() full scale
 ADC_VREF  = 3.3         # RP2350 ADC reference voltage
-DIVIDER   = 2.988       # ✓ bench-confirmed, 2-point zero-intercept fit -- converts raw to VSYS, not battery voltage (see header)
+DIVIDER   = 2.983       # ✓ bench-confirmed, 3-point zero-intercept fit -- converts raw to VSYS, not battery voltage (see header)
 
-VSYS_DROP_V = 0.365     # battery -> VSYS: diode + switch/wiring (see header)
+VSYS_DROP_V = 0.377     # battery -> VSYS: diode + switch/wiring (see header)
 BAT_FULL_V  = 4.2 - VSYS_DROP_V    # in VSYS-domain terms, to match read_voltage()
 BAT_EMPTY_V = 3.3 - VSYS_DROP_V
 
@@ -93,8 +93,9 @@ except KeyboardInterrupt:
     pass
 
 print("\n" + "=" * 48)
-print("  TEST 16 complete. DIVIDER=2.988 is a 2-point zero-intercept fit")
-print("  (VSYS 3.80V and 3.58V) with only ~3.5mV residual at each point.")
+print("  TEST 16 complete. DIVIDER=2.983 is a 3-point zero-intercept fit")
+print("  (VSYS 3.80V, 3.58V, 2.88V -- the last on a different cell) that")
+print("  independently agree within ~0.6% of each other.")
 print("  A third reading nearer BAT_EMPTY_V (~2.93V in VSYS terms) would")
 print("  tighten this further if ever needed. See config.py.")
 print("=" * 48)
