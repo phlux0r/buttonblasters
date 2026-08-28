@@ -235,7 +235,15 @@ PIN_WIFI_CS    = 25    # held HIGH before each battery read (see note above)
 VSYS_ADC_RATIO = 2.983
 VSYS_DROP_V    = 0.377  # battery -> VSYS: D1's forward drop + switch/wiring,
                          # averaged from three points, 0.36-0.40V (see above)
-BAT_FULL_V     = 4.2    # battery's own terminal voltage, NOT VSYS
+# BAT_FULL_V was 4.2 (textbook), which had a freshly-charged battery
+# displaying ~85-90% -- confirmed on hardware that the smoothing fix in
+# drivers/battery.py closed most of that gap (the same reading computes
+# to 95.3% now), and the remaining ~5% is real: this board's TP4056
+# module terminates a full charge at 4.18V (no-load, measured directly),
+# not the textbook 4.20V -- ordinary charge-IC tolerance, not a fault.
+# Calibrated against what this charger circuit actually delivers, same
+# as everything else in this section, rather than a spec-sheet number.
+BAT_FULL_V     = 4.18   # battery's own terminal voltage, NOT VSYS
 BAT_EMPTY_V    = 3.3    # battery's own terminal voltage, NOT VSYS
 BAT_WARN_PCT   = 15
 

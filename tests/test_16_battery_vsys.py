@@ -54,7 +54,7 @@ ADC_VREF  = 3.3         # RP2350 ADC reference voltage
 DIVIDER   = 2.983       # ✓ bench-confirmed, 3-point zero-intercept fit -- converts raw to VSYS, not battery voltage (see header)
 
 VSYS_DROP_V = 0.377     # battery -> VSYS: diode + switch/wiring (see header)
-BAT_FULL_V  = 4.2 - VSYS_DROP_V    # in VSYS-domain terms, to match read_voltage()
+BAT_FULL_V  = 4.18 - VSYS_DROP_V   # in VSYS-domain terms, to match read_voltage()
 BAT_EMPTY_V = 3.3 - VSYS_DROP_V
 
 print("\n[1] GP25 init (WiFi chip-select line — drive HIGH to deselect)...")
