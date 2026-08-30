@@ -91,10 +91,15 @@ PROMPT_Y     = 24          # prompt y inside the header (score sits at y=4)
 INTRO_PATH    = "/assets/match/bgm_intro-%s_480x320.bz"  # % cat; BE, kind 1
 INTRO_HOLD_MS = 400       # extra beat the category card stays up (tunable)
 RESULT_PATH    = "/assets/match/bgm_result_480x320.bz"  # BE, kind 1
-RESULT_SCORE_Y = 124      # score overlay y (scale-4, in the card's flat zone)
+RESULT_SCORE_Y = 120      # score overlay y (scale-4, in the card's flat zone)
                           # -- one line above RESULT_STARS_Y to make room
                           # for the star rating underneath
-RESULT_STARS_Y = 152      # star rating overlay y, scale-3, below the score
+RESULT_STARS_Y = 148      # star rating overlay y, scale-3, below the score
+RESULT_TIME_GAP = 28      # time/best line's Y offset from RESULT_STARS_Y --
+                          # stars render at scale=3 (24px-tall glyphs), so
+                          # this must clear 24px just to avoid overlapping
+                          # them; +16 (the previous value) didn't, confirmed
+                          # on hardware as the two lines visibly overlapping
 
 
 def _fb_idx(name):
@@ -391,23 +396,22 @@ class ShapeMatchGame(BaseGame):
             await self.display.text_main(
                 star_str, stx, RESULT_STARS_Y, YELLOW, WHITE, scale=3)
             if time_str:
-                # Confirmed on hardware: the baked card's white text area
-                # ends close under the stars line -- +28 spilled the time
-                # line onto the background art below it. +16 keeps it
-                # inside; revisit if a different card art's area differs.
                 tx = config.MAIN_W // 2 - len(time_str) * 8
                 await self.display.text_main(
-                    time_str, tx, RESULT_STARS_Y + 16, 0xEA16, WHITE, scale=2)
+                    time_str, tx, RESULT_STARS_Y + RESULT_TIME_GAP,
+                    0xEA16, WHITE, scale=2)
         else:
+            stars_y = 168   # was 172 -- shifted up 4px with the card path
             await self.display.show_splash(
                 "You got", score_str, bg_color=rgb(10, 60, 20))
             stx = config.MAIN_W // 2 - len(star_str) * 12
             await self.display.text_main(   # below show_splash's subtitle line
-                star_str, stx, 172, YELLOW, rgb(10, 60, 20), scale=3)
+                star_str, stx, stars_y, YELLOW, rgb(10, 60, 20), scale=3)
             if time_str:
                 tx = config.MAIN_W // 2 - len(time_str) * 8
                 await self.display.text_main(
-                    time_str, tx, 196, YELLOW, rgb(10, 60, 20), scale=2)
+                    time_str, tx, stars_y + RESULT_TIME_GAP,
+                    YELLOW, rgb(10, 60, 20), scale=2)
 
         if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
             await self._show_back_fallback(3)
