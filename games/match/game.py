@@ -380,7 +380,7 @@ class ShapeMatchGame(BaseGame):
             new_best = self.best_time_s is None or self._finish_time_s < self.best_time_s
             if new_best:
                 self.best_time_s = self._finish_time_s
-            time_str = ("NEW BEST! " if new_best else "TIME ") + \
+            time_str = ("BEST! " if new_best else "TIME ") + \
                 _format_time(self._finish_time_s)
 
         if await self.display.paint_main_bg(RESULT_PATH):
@@ -391,9 +391,13 @@ class ShapeMatchGame(BaseGame):
             await self.display.text_main(
                 star_str, stx, RESULT_STARS_Y, YELLOW, WHITE, scale=3)
             if time_str:
+                # Confirmed on hardware: the baked card's white text area
+                # ends close under the stars line -- +28 spilled the time
+                # line onto the background art below it. +16 keeps it
+                # inside; revisit if a different card art's area differs.
                 tx = config.MAIN_W // 2 - len(time_str) * 8
                 await self.display.text_main(
-                    time_str, tx, RESULT_STARS_Y + 28, 0xEA16, WHITE, scale=2)
+                    time_str, tx, RESULT_STARS_Y + 16, 0xEA16, WHITE, scale=2)
         else:
             await self.display.show_splash(
                 "You got", score_str, bg_color=rgb(10, 60, 20))
@@ -403,7 +407,7 @@ class ShapeMatchGame(BaseGame):
             if time_str:
                 tx = config.MAIN_W // 2 - len(time_str) * 8
                 await self.display.text_main(
-                    time_str, tx, 200, YELLOW, rgb(10, 60, 20), scale=2)
+                    time_str, tx, 196, YELLOW, rgb(10, 60, 20), scale=2)
 
         if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
             await self._show_back_fallback(3)
