@@ -53,8 +53,11 @@ _FALLBACK   = (RED, BLUE, GREEN, YELLOW)  # flat-colour stand-in if an icon is m
 BTN_ICON_X = (config.BTN_W - ICON) // 2
 BTN_ICON_Y = (config.BTN_H - ICON) // 2
 BORDER_THICKNESS = 15   # was 10 -- thicker, more visible against the icon
-BORDER_INSET     = 4    # pulls the border in from the raw edge -- the left
-                         # edge was visibly clipped flush against 0
+BORDER_INSET     = 10   # was 4 -- still clipped the left edge at 4; the
+                         # fill math checks out (draw_btn_border() draws all
+                         # 4 sides at the same inset/thickness), so this
+                         # looks like a physical crop on this panel rather
+                         # than a coordinate bug -- bump further if still cut
 
 MAX_SCORE = 12   # sequence length worth 3 stars -- see BaseGame._stars_for()
 
@@ -108,16 +111,8 @@ class ButtonMemoryGame(BaseGame):
         # rules out "fixed seed every boot" if a skew is ever reported
         # again after this change.
         random.seed(time.ticks_us())
-        self._base_bg   = [LEGEND_BG] * 4
-        self._icon_frame = [None] * 4
-        # Loaded once and kept for the whole game -- nothing else touches
-        # the shared arena while this game is active, so the frames stay
-        # valid without the per-round reset/reload Match It! needs (it
-        # cycles many more icons than fit in the arena at once; our 4 all
-        # fit together for the session).
-        flash_assets.arena.reset()
-        for i, name in enumerate(CHAR_NAMES):
-            await self._load_icon(i, name)
+        self._base_bg = [LEGEND_BG] * 4
+        await self._paint_all_bases()
 
     async def unload(self):
         flash_assets.arena.reset()
@@ -165,31 +160,38 @@ class ButtonMemoryGame(BaseGame):
         return self._make_result()
 
     # ── Icon setup ───────────────────────────────────────────────
+    # Each icon is decoded from flash and discarded on every call -- NOT
+    # cached across draws. A cached frame would sit in flash_assets.arena
+    # (the shared arena) indefinitely, and _end_screen()'s paint_main_bg()/
+    # paint_btn_bg() calls for RESULT_PATH/BACK_TILE_PATH/AGAIN_TILE_PATH
+    # reset+reuse that SAME shared arena by default -- silently overwriting
+    # a cached frame with unrelated pixel data the next time "Play Again"
+    # repaints the buttons. This is the exact "wizard/goblin corruption on
+    # Play Again" bug already documented on core/display_manager.py's
+    # paint_main_bg() -- Star Bonk! avoids it with its own dedicated
+    # _scratch_arena; we avoid it here by simply never keeping a frame
+    # around long enough to be corrupted. Four ~18KB flash decodes per
+    # "Play Again" is cheap and only happens once per replay, not per round.
 
-    async def _load_icon(self, idx, name):
-        """Decode one Star Bonk! legend icon into the shared arena and paint
-        its base (neutral, unlit) tile. Missing/bad asset -> flat colour
-        fallback, same convention as Match It!/Star Bonk!."""
+    async def _paint_base(self, idx):
+        """Decode button idx's icon fresh from flash and draw it + a
+        neutral border. Missing/bad asset -> flat colour fallback, same
+        convention as Match It!/Star Bonk!."""
+        name = CHAR_NAMES[idx]
+        flash_assets.arena.reset()
         try:
             sheet = flash_assets.SpriteSheet(_btn_asset_path(name))
             if not sheet.big_endian:
                 raise ValueError("legend icon must be BE (kind 3)")
-            self._icon_frame[idx] = sheet.frame(0)
             self._base_bg[idx] = LEGEND_BG
+            await self.display.fill_btn(idx, LEGEND_BG)
+            await self.display.blit_btn_buf(
+                idx, sheet.frame(0), ICON, ICON, x=BTN_ICON_X, y=BTN_ICON_Y)
         except Exception as e:
             print("[memory] icon load failed:", name, e)
-            self._icon_frame[idx] = None
             self._base_bg[idx] = _FALLBACK[idx]
-        await self._paint_base(idx)
-
-    async def _paint_base(self, idx):
-        """(Re)draw one button's icon + neutral border, from the cached
-        frame -- no flash access, safe to call every replay."""
-        await self.display.fill_btn(idx, self._base_bg[idx])
-        frame = self._icon_frame[idx]
-        if frame is not None:
-            await self.display.blit_btn_buf(
-                idx, frame, ICON, ICON, x=BTN_ICON_X, y=BTN_ICON_Y)
+            await self.display.fill_btn(idx, _FALLBACK[idx])
+        flash_assets.arena.reset()
         await self.display.draw_btn_border(
             idx, self._base_bg[idx], thickness=BORDER_THICKNESS, inset=BORDER_INSET)
 
