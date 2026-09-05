@@ -52,12 +52,13 @@ _FALLBACK   = (RED, BLUE, GREEN, YELLOW)  # flat-colour stand-in if an icon is m
 
 BTN_ICON_X = (config.BTN_W - ICON) // 2
 BTN_ICON_Y = (config.BTN_H - ICON) // 2
-BORDER_THICKNESS = 15   # was 10 -- thicker, more visible against the icon
-BORDER_INSET     = 10   # was 4 -- still clipped the left edge at 4; the
-                         # fill math checks out (draw_btn_border() draws all
-                         # 4 sides at the same inset/thickness), so this
-                         # looks like a physical crop on this panel rather
-                         # than a coordinate bug -- bump further if still cut
+BORDER_THICKNESS = 24   # quite thick, per on-device feedback -- was 10, then 15
+BORDER_INSET     = 0    # flush to the physical edge, per on-device feedback --
+                         # insetting (4px, then 10px) never stopped the left
+                         # edge clipping, so pulling the border in wasn't the
+                         # fix; going flush + thick instead so a few cropped
+                         # pixels (if that's what's happening physically on
+                         # this panel) barely register against a 24px band
 
 MAX_SCORE = 12   # sequence length worth 3 stars -- see BaseGame._stars_for()
 
@@ -70,8 +71,8 @@ RESULT_BG = rgb(20, 10, 50)
 BACK_TILE_PATH  = "/assets/menu/btn_back_300x240.bz"     # shared across games
 AGAIN_TILE_PATH = "/assets/menu/btn_again_300x240.bz"    # shared across games
 RESULT_PATH     = "/assets/memory/bgm_result_480x320.bz"
-RESULT_SCORE_Y  = 125   # score overlay y, scale-2 (was 120 -- lowered 5px per feedback
-                         # on the real art)
+RESULT_SCORE_Y  = 135   # score overlay y, scale-2 (was 120, then 125 -- lowered
+                         # another 10px per feedback on the real art)
 RESULT_STARS_Y  = 148   # star rating overlay y, scale-3, below the score
 
 # One background covers both the "Watch!" and "Your turn!" phases of a
