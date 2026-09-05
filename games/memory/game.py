@@ -52,13 +52,12 @@ _FALLBACK   = (RED, BLUE, GREEN, YELLOW)  # flat-colour stand-in if an icon is m
 
 BTN_ICON_X = (config.BTN_W - ICON) // 2
 BTN_ICON_Y = (config.BTN_H - ICON) // 2
-BORDER_THICKNESS = 24   # quite thick, per on-device feedback -- was 10, then 15
-BORDER_INSET     = 0    # flush to the physical edge, per on-device feedback --
-                         # insetting (4px, then 10px) never stopped the left
-                         # edge clipping, so pulling the border in wasn't the
-                         # fix; going flush + thick instead so a few cropped
-                         # pixels (if that's what's happening physically on
-                         # this panel) barely register against a 24px band
+BORDER_THICKNESS   = 24   # quite thick, per on-device feedback -- was 10, then 15
+BORDER_INSET       = 0    # flush on top/bottom/right, per on-device feedback
+BORDER_LEFT_EXTRA  = 10   # extra nudge for the left bar only -- confirmed on-
+                           # device the crop is uniform on the left across all
+                           # 4 buttons (documents/HARDWARE_NOTES.md), so only
+                           # that one side needs pulling in further
 
 MAX_SCORE = 12   # sequence length worth 3 stars -- see BaseGame._stars_for()
 
@@ -194,7 +193,8 @@ class ButtonMemoryGame(BaseGame):
             await self.display.fill_btn(idx, _FALLBACK[idx])
         flash_assets.arena.reset()
         await self.display.draw_btn_border(
-            idx, self._base_bg[idx], thickness=BORDER_THICKNESS, inset=BORDER_INSET)
+            idx, self._base_bg[idx], thickness=BORDER_THICKNESS,
+            inset=BORDER_INSET, left_extra=BORDER_LEFT_EXTRA)
 
     async def _paint_all_bases(self):
         for i in range(4):
@@ -203,7 +203,8 @@ class ButtonMemoryGame(BaseGame):
     async def _set_lit(self, idx, on):
         color = BTN_ACCENT[idx] if on else self._base_bg[idx]
         await self.display.draw_btn_border(
-            idx, color, thickness=BORDER_THICKNESS, inset=BORDER_INSET)
+            idx, color, thickness=BORDER_THICKNESS,
+            inset=BORDER_INSET, left_extra=BORDER_LEFT_EXTRA)
 
     # ── Round display ────────────────────────────────────────────
     # One background (WATCH_PATH) covers the whole round -- "Watch!" and
