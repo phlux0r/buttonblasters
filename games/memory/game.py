@@ -62,7 +62,12 @@ PRESS_LIT_MS = 220     # how long a player's own press flashes back
 ROUND_GAP_MS = 500     # pause after a correct round before the sequence grows
 
 RESULT_BG = rgb(20, 10, 50)
-BACK_TILE_PATH = "/assets/menu/btn_back_300x240.bz"   # shared across games
+BACK_TILE_PATH  = "/assets/menu/btn_back_300x240.bz"     # shared across games
+AGAIN_TILE_PATH = "/assets/menu/btn_again_300x240.bz"    # shared across games
+RESULT_PATH     = "/assets/memory/bgm_result_480x320.bz"
+RESULT_SCORE_Y  = 120   # score overlay y, scale-2 -- matches Match It!/Star Bonk!'s
+                         # result-card layout; nudge once the real art is on screen
+RESULT_STARS_Y  = 148   # star rating overlay y, scale-3, below the score
 
 # One background covers both the "Watch!" and "Your turn!" phases of a
 # round -- only the overlay text/colour changes between them (same trick
@@ -284,15 +289,24 @@ class ButtonMemoryGame(BaseGame):
         stars     = self._stars_for(self.score)
         star_str  = ("*" * stars) + ("-" * (3 - stars))
 
-        await self.display.show_splash("Nice memory!", score_str, bg_color=RESULT_BG)
-        stx = config.MAIN_W // 2 - len(star_str) * 12   # scale 3 -> char 24, half 12
-        await self.display.text_main(
-            star_str, stx, 168, YELLOW, RESULT_BG, scale=3)
+        if await self.display.paint_main_bg(RESULT_PATH):
+            ssx = config.MAIN_W // 2 - len(score_str) * 8
+            await self.display.text_main(
+                score_str, ssx, RESULT_SCORE_Y, 0xEA16, WHITE, scale=2)
+            stx = config.MAIN_W // 2 - len(star_str) * 12   # scale 3 -> char 24, half 12
+            await self.display.text_main(
+                star_str, stx, RESULT_STARS_Y, YELLOW, WHITE, scale=3)
+        else:
+            await self.display.show_splash("Nice memory!", score_str, bg_color=RESULT_BG)
+            stx = config.MAIN_W // 2 - len(star_str) * 12
+            await self.display.text_main(
+                star_str, stx, 168, YELLOW, RESULT_BG, scale=3)
 
         if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
             await self._show_back_fallback(3)
         for idx in (0, 1, 2):
-            await self._show_replay_tile(idx)
+            if not await self.display.paint_btn_bg(idx, AGAIN_TILE_PATH):
+                await self._show_replay_fallback(idx)
 
         await self.announce_round_complete()
 
@@ -326,7 +340,8 @@ class ButtonMemoryGame(BaseGame):
         await self.display.text_btn(idx, label, max(0, lx),
                                     config.BTN_H // 2 - 4, WHITE, bg, scale=1)
 
-    async def _show_replay_tile(self, idx):
+    async def _show_replay_fallback(self, idx):
+        # Only used if btn_again_300x240.bz is somehow missing.
         bg = rgb(15, 60, 20)
         await self.display.fill_btn(idx, bg)
         await self.display.draw_btn_border(idx, rgb(60, 200, 90))
