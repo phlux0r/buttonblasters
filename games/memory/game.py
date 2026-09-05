@@ -4,28 +4,55 @@
 # One mistake ends the round-set. Score = number of rounds successfully
 # repeated (the length of the longest sequence played back correctly).
 #
-# No baked assets — each button screen is just a solid colour fill (bright
-# "lit" / dim "rest"), so this game has zero flash/SD dependency and can't
-# be broken by a missing sprite sheet. Tones are synthesized via
-# AudioManager.play_tone() (drivers/audio.py) rather than sample playback,
-# for the same reason.
+# ASSETS: reuses Star Bonk!'s already-baked button-screen legend icons
+# (wizard/goblin/star/mushroom) instead of baking new art -- each button
+# permanently shows one character; "lit" is a coloured border flash around
+# the icon, not a fill swap, so a step's icon never needs re-decoding from
+# flash mid-round (just a cheap border redraw). Falls back to a flat colour
+# tile (same convention as Match It!/Star Bonk!) if an icon is missing.
+#   bonk/sprb_<name>_96x96x1.sz  BE, kind 3, opaque -- see games/bonk/game.py
+#     for the full asset spec. wizard, goblin, star, mushroom.
+#
+# Tones are synthesized via AudioManager.play_tone() (drivers/audio.py)
+# rather than sample playback -- no audio asset dependency either.
+#
+# RANDOMNESS NOTE: no random.seed() call exists anywhere in this codebase,
+# so the PRNG relies entirely on the port's default boot-time seeding. If a
+# single button seems to dominate a session, the much more likely cause is
+# structural, not a biased PRNG: every round replays the FULL sequence from
+# step 0, so whichever button was drawn first is shown far more often over
+# a session than later steps purely from repetition -- that's inherent to
+# Simon-style play, not a fairness bug. Reseeding here with a live timer
+# reading is cheap insurance against the other, less likely possibility
+# (a fixed/weak default seed producing the same sequence every boot).
 #
 # Button IDs (core/game_base.py): 0-3 = screen buttons, 4 = BACK/HOME.
 # Physical layout: 0=top-left 2=top-right / 1=bottom-left 3=bottom-right.
 
 import asyncio
 import random
+import time
 import config
 from core.game_base import BaseGame, GameResult
-from core.display_manager import rgb, WHITE, RED, GREEN, BLUE, YELLOW, DARK
+from core.display_manager import rgb, WHITE, RED, GREEN, BLUE, YELLOW
+from drivers import flash_assets
 from drivers.touch import TOUCH_TAP
 
 # ── Content ──────────────────────────────────────────────────────
-# Classic 4-colour Simon palette, one per screen button, each with its own
-# tone so the sequence is learnable by ear as well as by eye.
-BTN_LIT = (RED, BLUE, GREEN, YELLOW)
-BTN_DIM = (rgb(60, 8, 8), rgb(8, 8, 60), rgb(8, 50, 8), rgb(70, 65, 0))
-BTN_TONE_HZ = (330, 392, 440, 523)   # E4 G4 A4 C5 -- a simple, pleasant chord
+# Reuse Star Bonk!'s 4 characters/icons -- same names, same button order,
+# so the two games feel like part of one family instead of introducing a
+# fifth colour language.
+ASSET_DIR  = "/assets/static/bonk/"
+ICON       = 96
+CHAR_NAMES = ("wizard", "goblin", "star", "mushroom")   # -> buttons 0,1,2,3
+BTN_ACCENT = (RED, BLUE, GREEN, YELLOW)   # lit-border colour per button
+BTN_TONE_HZ = (330, 392, 440, 523)        # E4 G4 A4 C5 -- one tone per button
+LEGEND_BG   = WHITE                       # icon tile background (Bonk's convention)
+_FALLBACK   = (RED, BLUE, GREEN, YELLOW)  # flat-colour stand-in if an icon is missing
+
+BTN_ICON_X = (config.BTN_W - ICON) // 2
+BTN_ICON_Y = (config.BTN_H - ICON) // 2
+BORDER_THICKNESS = 10
 
 MAX_SCORE = 12   # sequence length worth 3 stars -- see BaseGame._stars_for()
 
@@ -35,6 +62,11 @@ PRESS_LIT_MS = 220     # how long a player's own press flashes back
 ROUND_GAP_MS = 500     # pause after a correct round before the sequence grows
 
 RESULT_BG = rgb(20, 10, 50)
+BACK_TILE_PATH = "/assets/menu/btn_back_300x240.bz"   # shared across games
+
+
+def _btn_asset_path(name):
+    return "%ssprb_%s_%dx%dx1.sz" % (ASSET_DIR, name, ICON, ICON)
 
 
 class ButtonMemoryGame(BaseGame):
@@ -54,7 +86,24 @@ class ButtonMemoryGame(BaseGame):
     # ── Lifecycle ────────────────────────────────────────────────
 
     async def load(self):
-        await self.display.fill_all_btns(DARK)
+        # Defensive reseed -- see the RANDOMNESS NOTE above. Cheap, and
+        # rules out "fixed seed every boot" if a skew is ever reported
+        # again after this change.
+        random.seed(time.ticks_us())
+        self._base_bg   = [LEGEND_BG] * 4
+        self._icon_frame = [None] * 4
+        # Loaded once and kept for the whole game -- nothing else touches
+        # the shared arena while this game is active, so the frames stay
+        # valid without the per-round reset/reload Match It! needs (it
+        # cycles many more icons than fit in the arena at once; our 4 all
+        # fit together for the session).
+        flash_assets.arena.reset()
+        for i, name in enumerate(CHAR_NAMES):
+            await self._load_icon(i, name)
+
+    async def unload(self):
+        flash_assets.arena.reset()
+        await super().unload()
 
     async def run(self) -> GameResult:
         self._running = True
@@ -64,7 +113,7 @@ class ButtonMemoryGame(BaseGame):
         while True:
             self.sequence = []
             self.score = 0
-            await self._dim_all()
+            await self._paint_all_bases()
 
             while True:
                 if await self.check_back():
@@ -97,14 +146,44 @@ class ButtonMemoryGame(BaseGame):
 
         return self._make_result()
 
-    async def unload(self):
-        await super().unload()
+    # ── Icon setup ───────────────────────────────────────────────
+
+    async def _load_icon(self, idx, name):
+        """Decode one Star Bonk! legend icon into the shared arena and paint
+        its base (neutral, unlit) tile. Missing/bad asset -> flat colour
+        fallback, same convention as Match It!/Star Bonk!."""
+        try:
+            sheet = flash_assets.SpriteSheet(_btn_asset_path(name))
+            if not sheet.big_endian:
+                raise ValueError("legend icon must be BE (kind 3)")
+            self._icon_frame[idx] = sheet.frame(0)
+            self._base_bg[idx] = LEGEND_BG
+        except Exception as e:
+            print("[memory] icon load failed:", name, e)
+            self._icon_frame[idx] = None
+            self._base_bg[idx] = _FALLBACK[idx]
+        await self._paint_base(idx)
+
+    async def _paint_base(self, idx):
+        """(Re)draw one button's icon + neutral border, from the cached
+        frame -- no flash access, safe to call every replay."""
+        await self.display.fill_btn(idx, self._base_bg[idx])
+        frame = self._icon_frame[idx]
+        if frame is not None:
+            await self.display.blit_btn_buf(
+                idx, frame, ICON, ICON, x=BTN_ICON_X, y=BTN_ICON_Y)
+        await self.display.draw_btn_border(
+            idx, self._base_bg[idx], thickness=BORDER_THICKNESS)
+
+    async def _paint_all_bases(self):
+        for i in range(4):
+            await self._paint_base(i)
+
+    async def _set_lit(self, idx, on):
+        color = BTN_ACCENT[idx] if on else self._base_bg[idx]
+        await self.display.draw_btn_border(idx, color, thickness=BORDER_THICKNESS)
 
     # ── Round display ────────────────────────────────────────────
-
-    async def _dim_all(self):
-        for i in range(4):
-            await self.display.fill_btn(i, BTN_DIM[i])
 
     async def _show_round_intro(self):
         await self.display.fill_main(rgb(15, 8, 40))
@@ -117,10 +196,10 @@ class ButtonMemoryGame(BaseGame):
 
     async def _play_sequence(self):
         for step in self.sequence:
-            await self.display.fill_btn(step, BTN_LIT[step])
+            await self._set_lit(step, True)
             await self.audio.play_tone(BTN_TONE_HZ[step], STEP_LIT_MS)
             await asyncio.sleep_ms(STEP_LIT_MS)
-            await self.display.fill_btn(step, BTN_DIM[step])
+            await self._set_lit(step, False)
             await asyncio.sleep_ms(STEP_GAP_MS)
 
         prompt = "Your turn!"
@@ -159,10 +238,10 @@ class ButtonMemoryGame(BaseGame):
                 return btn
 
     async def _flash_press(self, btn):
-        await self.display.fill_btn(btn, BTN_LIT[btn])
+        await self._set_lit(btn, True)
         await self.audio.play_tone(BTN_TONE_HZ[btn], PRESS_LIT_MS)
         await asyncio.sleep_ms(PRESS_LIT_MS)
-        await self.display.fill_btn(btn, BTN_DIM[btn])
+        await self._set_lit(btn, False)
 
     # ── Feedback ──────────────────────────────────────────────────
 
@@ -192,8 +271,8 @@ class ButtonMemoryGame(BaseGame):
         await self.display.text_main(
             star_str, stx, 168, YELLOW, RESULT_BG, scale=3)
 
-        if not await self._show_back_tile(3):
-            pass
+        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
+            await self._show_back_fallback(3)
         for idx in (0, 1, 2):
             await self._show_replay_tile(idx)
 
@@ -218,7 +297,9 @@ class ButtonMemoryGame(BaseGame):
             if btn in (0, 1, 2):
                 return "again"
 
-    async def _show_back_tile(self, idx):
+    async def _show_back_fallback(self, idx):
+        # Only used if btn_back_300x240.bz is somehow missing -- normally
+        # paint_btn_bg() above finds the shared asset every other game uses.
         bg = rgb(60, 15, 15)
         await self.display.fill_btn(idx, bg)
         await self.display.draw_btn_border(idx, rgb(200, 60, 60))
@@ -226,7 +307,6 @@ class ButtonMemoryGame(BaseGame):
         lx = config.BTN_W // 2 - len(label) * 4
         await self.display.text_btn(idx, label, max(0, lx),
                                     config.BTN_H // 2 - 4, WHITE, bg, scale=1)
-        return True
 
     async def _show_replay_tile(self, idx):
         bg = rgb(15, 60, 20)
