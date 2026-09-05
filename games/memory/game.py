@@ -52,7 +52,9 @@ _FALLBACK   = (RED, BLUE, GREEN, YELLOW)  # flat-colour stand-in if an icon is m
 
 BTN_ICON_X = (config.BTN_W - ICON) // 2
 BTN_ICON_Y = (config.BTN_H - ICON) // 2
-BORDER_THICKNESS = 10
+BORDER_THICKNESS = 15   # was 10 -- thicker, more visible against the icon
+BORDER_INSET     = 4    # pulls the border in from the raw edge -- the left
+                         # edge was visibly clipped flush against 0
 
 MAX_SCORE = 12   # sequence length worth 3 stars -- see BaseGame._stars_for()
 
@@ -65,8 +67,8 @@ RESULT_BG = rgb(20, 10, 50)
 BACK_TILE_PATH  = "/assets/menu/btn_back_300x240.bz"     # shared across games
 AGAIN_TILE_PATH = "/assets/menu/btn_again_300x240.bz"    # shared across games
 RESULT_PATH     = "/assets/memory/bgm_result_480x320.bz"
-RESULT_SCORE_Y  = 120   # score overlay y, scale-2 -- matches Match It!/Star Bonk!'s
-                         # result-card layout; nudge once the real art is on screen
+RESULT_SCORE_Y  = 125   # score overlay y, scale-2 (was 120 -- lowered 5px per feedback
+                         # on the real art)
 RESULT_STARS_Y  = 148   # star rating overlay y, scale-3, below the score
 
 # One background covers both the "Watch!" and "Your turn!" phases of a
@@ -189,7 +191,7 @@ class ButtonMemoryGame(BaseGame):
             await self.display.blit_btn_buf(
                 idx, frame, ICON, ICON, x=BTN_ICON_X, y=BTN_ICON_Y)
         await self.display.draw_btn_border(
-            idx, self._base_bg[idx], thickness=BORDER_THICKNESS)
+            idx, self._base_bg[idx], thickness=BORDER_THICKNESS, inset=BORDER_INSET)
 
     async def _paint_all_bases(self):
         for i in range(4):
@@ -197,7 +199,8 @@ class ButtonMemoryGame(BaseGame):
 
     async def _set_lit(self, idx, on):
         color = BTN_ACCENT[idx] if on else self._base_bg[idx]
-        await self.display.draw_btn_border(idx, color, thickness=BORDER_THICKNESS)
+        await self.display.draw_btn_border(
+            idx, color, thickness=BORDER_THICKNESS, inset=BORDER_INSET)
 
     # ── Round display ────────────────────────────────────────────
     # One background (WATCH_PATH) covers the whole round -- "Watch!" and
@@ -217,9 +220,11 @@ class ButtonMemoryGame(BaseGame):
         # below it (and is a no-op-looking fill if the background is the
         # flat HEADER_COLOR fallback).
         await self.display.main.fill(HEADER_COLOR, 0, 0, config.MAIN_W, HEADER_H)
+        # Left-aligned, not centered -- "Your turn!" at scale=3 centered ran
+        # into draw_score's top-right box ("SCORE:0000" starts ~x=316); a
+        # fixed left x always clears it regardless of prompt length.
         await self.display.text_main(
-            text, config.MAIN_W // 2 - len(text) * 12, PROMPT_Y,
-            color, HEADER_COLOR, scale=3)
+            text, 16, PROMPT_Y, color, HEADER_COLOR, scale=3)
         await self.display.draw_score(self.score, color=YELLOW, bg=HEADER_COLOR)
 
     async def _play_sequence(self):

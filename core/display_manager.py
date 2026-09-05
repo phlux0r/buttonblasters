@@ -312,16 +312,22 @@ class DisplayManager:
     # ── UI helpers ───────────────────────────────────────────────
 
     async def draw_btn_border(self, idx: int,
-                               color=WHITE, thickness=6):
-        """Draw a coloured border on a button screen."""
+                               color=WHITE, thickness=6, inset=0):
+        """Draw a coloured border on a button screen. inset pulls the whole
+        border in from the raw edges -- some button panels visibly crop a
+        few pixels at the physical edge (bezel/mounting), so a caller that
+        sees a border clipped there can pull it in without affecting every
+        other draw_btn_border() call (default inset=0 is the old behaviour)."""
         d  = self.btns[idx]
         bw = config.BTN_W
         bh = config.BTN_H
         t  = thickness
-        await d.fill(color, 0,    0,    bw, t)
-        await d.fill(color, 0,    bh-t, bw, t)
-        await d.fill(color, 0,    0,    t,  bh)
-        await d.fill(color, bw-t, 0,    t,  bh)
+        x0, y0 = inset, inset
+        w, h = bw - 2 * inset, bh - 2 * inset
+        await d.fill(color, x0,     y0,       w, t)
+        await d.fill(color, x0,     y0+h-t,   w, t)
+        await d.fill(color, x0,     y0,       t, h)
+        await d.fill(color, x0+w-t, y0,       t, h)
 
     async def draw_btn_highlight(self, idx: int, on: bool = True):
         """Yellow border = selected, black = deselected."""
