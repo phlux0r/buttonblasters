@@ -50,6 +50,7 @@ from core.game_base import BaseGame, GameResult, shuffle
 from core.display_manager import (rgb, WHITE, YELLOW, RED, GREEN, BLUE,
                                    CYAN, MAGENTA, ORANGE, DARK)
 from drivers import flash_assets
+from drivers.touch import TOUCH_TAP
 
 # ── Content ──────────────────────────────────────────────────────
 ITEMS = {
@@ -434,6 +435,8 @@ class ShapeMatchGame(BaseGame):
             except Exception:
                 await asyncio.sleep_ms(20)
                 continue
+            if btn == TOUCH_TAP and evt == "tap":
+                return "again"          # tap anywhere on the score screen -> replay
             if evt != "press":
                 continue
             if btn == 3 or btn == 4:      # BTN-3 tile, or hardware BACK/HOME

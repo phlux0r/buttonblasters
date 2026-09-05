@@ -66,6 +66,7 @@ from core.sprite_engine import SpriteEngine, STRIP_H
 from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
 from drivers import flash_assets
 from drivers.haptic import haptic
+from drivers.touch import TOUCH_TAP
 
 # ── Content ──────────────────────────────────────────────────────
 TARGETS = ("wizard", "goblin", "star", "mushroom")
@@ -630,6 +631,8 @@ class StarBonkGame(BaseGame):
             except Exception:
                 await asyncio.sleep_ms(20)
                 continue
+            if btn == TOUCH_TAP and evt == "tap":
+                return "again"          # tap anywhere on the score screen -> replay
             if evt != "press":
                 continue
             if btn == 3 or btn == 4:      # BTN-3 tile, or hardware BACK/HOME
