@@ -64,6 +64,17 @@ ROUND_GAP_MS = 500     # pause after a correct round before the sequence grows
 RESULT_BG = rgb(20, 10, 50)
 BACK_TILE_PATH = "/assets/menu/btn_back_300x240.bz"   # shared across games
 
+# One background covers both the "Watch!" and "Your turn!" phases of a
+# round -- only the overlay text/colour changes between them (same trick
+# Match It! uses: one board, header text repainted per match). Saves a
+# second asset and a second flash decode every round.
+WATCH_PATH   = "/assets/memory/bgm_watch_480x320.bz"
+HEADER_H     = 48      # the art's plain overlay zone -- ask for this exact
+                        # band to be baked in HEADER_COLOR so our repaint is
+                        # a seamless patch, same trick as Match It!'s pink strip
+HEADER_COLOR = rgb(20, 10, 50)
+PROMPT_Y     = 12       # overlay text y within the header band
+
 
 def _btn_asset_path(name):
     return "%ssprb_%s_%dx%dx1.sz" % (ASSET_DIR, name, ICON, ICON)
@@ -184,15 +195,27 @@ class ButtonMemoryGame(BaseGame):
         await self.display.draw_btn_border(idx, color, thickness=BORDER_THICKNESS)
 
     # ── Round display ────────────────────────────────────────────
+    # One background (WATCH_PATH) covers the whole round -- "Watch!" and
+    # "Your turn!" are just different text drawn into its header band, not
+    # separate images. Painted once per round at intro time; the button
+    # screens are what change during playback/input, so the main screen
+    # never needs repainting until the next round.
 
     async def _show_round_intro(self):
-        await self.display.fill_main(rgb(15, 8, 40))
-        prompt = "Watch!"
-        await self.display.text_main(
-            prompt, config.MAIN_W // 2 - len(prompt) * 16, 40,
-            WHITE, rgb(15, 8, 40), scale=4)
-        await self.display.draw_score(self.score, color=YELLOW, bg=rgb(15, 8, 40))
+        if not await self.display.paint_main_bg(WATCH_PATH):
+            await self.display.fill_main(HEADER_COLOR)
+        await self._draw_prompt("Watch!", WHITE)
         await asyncio.sleep_ms(400)   # a beat before the sequence starts
+
+    async def _draw_prompt(self, text, color):
+        # Clear only the header band -- the art's own scene stays intact
+        # below it (and is a no-op-looking fill if the background is the
+        # flat HEADER_COLOR fallback).
+        await self.display.main.fill(HEADER_COLOR, 0, 0, config.MAIN_W, HEADER_H)
+        await self.display.text_main(
+            text, config.MAIN_W // 2 - len(text) * 12, PROMPT_Y,
+            color, HEADER_COLOR, scale=3)
+        await self.display.draw_score(self.score, color=YELLOW, bg=HEADER_COLOR)
 
     async def _play_sequence(self):
         for step in self.sequence:
@@ -202,12 +225,7 @@ class ButtonMemoryGame(BaseGame):
             await self._set_lit(step, False)
             await asyncio.sleep_ms(STEP_GAP_MS)
 
-        prompt = "Your turn!"
-        await self.display.fill_main(rgb(10, 40, 20))
-        await self.display.text_main(
-            prompt, config.MAIN_W // 2 - len(prompt) * 12, 40,
-            WHITE, rgb(10, 40, 20), scale=3)
-        await self.display.draw_score(self.score, color=YELLOW, bg=rgb(10, 40, 20))
+        await self._draw_prompt("Your turn!", YELLOW)
 
     # ── Input ─────────────────────────────────────────────────────
 
