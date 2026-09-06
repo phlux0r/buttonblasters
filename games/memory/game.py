@@ -53,11 +53,13 @@ _FALLBACK   = (RED, BLUE, GREEN, YELLOW)  # flat-colour stand-in if an icon is m
 BTN_ICON_X = (config.BTN_W - ICON) // 2
 BTN_ICON_Y = (config.BTN_H - ICON) // 2
 BORDER_THICKNESS   = 24   # quite thick, per on-device feedback -- was 10, then 15
-BORDER_INSET       = 0    # flush on top/bottom/right, per on-device feedback
-BORDER_LEFT_EXTRA  = 10   # extra nudge for the left bar only -- confirmed on-
-                           # device the crop is uniform on the left across all
-                           # 4 buttons (documents/HARDWARE_NOTES.md), so only
-                           # that one side needs pulling in further
+BORDER_INSET       = 0    # flush on all 4 sides
+BORDER_LEFT_EXTRA  = 0    # was 10 -- that was compensating in-game for the
+                           # panel's real ~20px left column crop, now fixed
+                           # at the source (config.BTN_COL_OFFSET, applied
+                           # centrally in ST7789._set_window()). Left at 10
+                           # here too it just double-compensates, showing as
+                           # a white gap between the true edge and the bar.
 
 MAX_SCORE = 12   # sequence length worth 3 stars -- see BaseGame._stars_for()
 
