@@ -1,18 +1,8 @@
 # tests/test_15_button_landscape.py — Button Blasters
 # BENCH TEST: probe ST7789 button screens for landscape orientation.
 #
-# STATUS UPDATE (2026-09-06): the 300x240 window this test "confirmed"
-# clean was WRONG -- datasheet-confirmed native width is 280, not 300.
-# A full-screen solid colour fill can't catch a too-wide window: the
-# panel silently drops column addresses past its true visible edge
-# instead of showing a dead/garbage strip, so 300x240 still looked
-# "clean edge-to-edge" here. Only surfaced once something was drawn as
-# a border flush against the far edge (see documents/HARDWARE_NOTES.md).
-# MADCTL values below are UNAFFECTED (orientation, not size) -- only
-# PROBE_W needs updating before re-running this to re-verify 280x240.
-#
-# ORIGINAL STATUS: CONFIRMED on all 4 physical positions. MADCTL=0xA0 for
-# BTN-0/1 (300x240, clean fill, correct top-left corner). The shell's right column
+# STATUS: CONFIRMED on all 4 physical positions. MADCTL=0xA0 for BTN-0/1
+# (300x240, clean fill, correct top-left corner). The shell's right column
 # (BTN-2/BTN-3) is mounted physically rotated 180 degrees from the left
 # column (tidy cable routing), and needs the 180-degree-compensated value
 # 0x60 (= 0xA0 with the MY and MX bits both toggled) to match -- also
@@ -75,7 +65,7 @@ CANDIDATES = {
 #    240x300 against a 240x280 spec (+20 rows) -- so don't assume a clean
 #    swap to 300x240. Try this first; if the fill leaves a dead strip or
 #    shows garbage at an edge, adjust and rerun.
-PROBE_W = 280   # was 300 -- see the 2026-09-06 status update above
+PROBE_W = 300
 PROBE_H = 240
 
 blk     = Pin(13, Pin.OUT, value=1)

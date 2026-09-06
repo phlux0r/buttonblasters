@@ -3,10 +3,10 @@
 #
 # Display layout:
 #   main      ILI9488 4.0" 320×480  — game/menu primary screen
-#   btns[0]   ST7789  1.69" 280×240 landscape — PREV ← in menu / game context
-#   btns[1]   ST7789  1.69" 280×240 landscape — game preview / context action
-#   btns[2]   ST7789  1.69" 280×240 landscape — game preview / context action
-#   btns[3]   ST7789  1.69" 280×240 landscape — NEXT → in menu / game context
+#   btns[0]   ST7789  1.69" 300×240 landscape — PREV ← in menu / game context
+#   btns[1]   ST7789  1.69" 300×240 landscape — game preview / context action
+#   btns[2]   ST7789  1.69" 300×240 landscape — game preview / context action
+#   btns[3]   ST7789  1.69" 300×240 landscape — NEXT → in menu / game context
 #
 # Games use this class — never the low-level drivers directly.
 
@@ -240,7 +240,7 @@ class DisplayManager:
             a.reset()
 
     async def paint_btn_bg(self, idx, path, arena=None):
-        """Stream a BE (kind 1) 280x240 background from flash to button screen
+        """Stream a BE (kind 1) 300x240 background from flash to button screen
         idx, one strip at a time via an arena-borrowed buffer. Returns True if
         painted, False on any error (caller supplies the fallback).
 

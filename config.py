@@ -75,22 +75,12 @@ ILI9488_MADCTL = 0x28   # landscape. Rotation options (all BGR):
 #   0x48 = portrait (current)      0x28 = landscape
 #   0x88 = portrait flipped        0xE8 = landscape flipped (180° of 0x28)
 
-# ── ST7789 button displays (×4, 1.69" 280×240 landscape) ─────────
-# BTN_W was 300 until 2026-09-06 -- datasheet-confirmed native width is
-# 280, not 300. The wrong 300 slipped through test_15_button_landscape.py
-# because its bench check was a full-screen solid colour fill: the panel
-# silently drops/ignores column addresses past its true visible width
-# rather than showing a dead or garbage strip, so a 20px-too-wide window
-# still looked "clean edge-to-edge" under that test. Only surfaced once
-# something was drawn as a border flush against the far edge (Button
-# Memory's lit-button border, see documents/HARDWARE_NOTES.md). Every
-# baked button-screen asset (icons, menu tiles, back/next/prev/again
-# tiles) was baked at the wrong 300x240 and needs re-baking at 280x240.
+# ── ST7789 button displays (×4, 1.69" 300×240 landscape) ─────────
 PIN_CS_BTN   = (7, 8, 9, 10)
 PIN_DC_BTN   = (2, 11, 14, 21)   # GP2 for BTN-0 (GP5 is DEAD)
 PIN_RST_BTN  = 15                  # shared reset
 PIN_BLK_BTN  = 13                  # MUST be driven HIGH from GPIO
-BTN_W        = 280
+BTN_W        = 300
 BTN_H        = 240
 NUM_BTN_SCREENS = 4
 # Per-button MADCTL — NOT uniform. Physical mounting is a 2x2 matrix
