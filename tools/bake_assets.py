@@ -102,24 +102,32 @@ def ffmpeg_to_raw(png: Path, w: int, h: int, pixfmt: str, matte: str) -> bytes:
     a blend of the two, regardless of what alpha the source PNG actually
     has at its edges.
 
-    SECOND, DISTINCT fringe source (found 2026-09 by decoding shipped
-    spr_wizard/spr_goblin .sz files and diffing pixels against the exact
-    key -- a 1px-wide ring of near-magenta-but-not-key colours sat right
-    at the silhouette boundary, on BOTH sprites, even after the source art
-    was re-exported with shape/stroke antialiasing OFF): a pixel can have
-    alpha >= ALPHA_THRESHOLD (correctly kept "opaque" by the fix above)
-    while its RGB is ALREADY blended toward the matte colour, baked in by
-    whatever resampling the art tool did when flattening/resizing to
-    96x96 -- independent of the shape antialiasing setting, which only
-    affects the vector render, not a later raster resize. Hard-
-    thresholding alpha can't fix a contaminated RGB value on a pixel it
-    correctly decided to keep. Fix: erode the hard alpha mask by 1px
-    (ffmpeg's `erosion` filter, default 3x3 min-filter) before merging --
-    this reclassifies that outer contaminated ring as background instead
-    of opaque, at the cost of the silhouette shrinking by ~1px all round
-    (invisible at 96x96 against the fringe it removes)."""
+    THIRD, ROOT-CAUSE fringe source, found 2026-09 and this one explains
+    (and supersedes as "the" cause) the wizard/goblin/mushroom/star fringe
+    completely -- confirmed by baking all 4 sprites from source art that
+    tested 100% opaque (alpha=255 everywhere) with a pixel-exact matte
+    background (zero blended edge pixels, verified by decoding the PNGs
+    directly), yet ~30% of pixels in the BAKED output -- not just at
+    edges, scattered across the whole frame, including pure-matte
+    background pixels -- differed from a plain bit-truncated RGB565 pack
+    of the source by small amounts (a few units per channel), with the
+    largest excursions clustered at sharp silhouette edges. That's the
+    signature of error-diffusion DITHERING, which ffmpeg's libswscale
+    applies by default when narrowing 8-bit/channel RGBA down to 5-6-5
+    RGB565 (standard behaviour to reduce banding in photos -- actively
+    harmful for a hard colour-key where EVERY matte pixel must survive
+    bit-exact). Dithering explains everything the two fixes above don't:
+    they only ever touch pixels near an alpha transition, but a perfectly
+    flat, fully-opaque matte fill gets its exact colour perturbed too.
+    Fix: `-sws_dither none` (global ffmpeg option) turns off that
+    dithering, so the conversion is a deterministic per-pixel truncation
+    -- exact matte in, exact key out, every time. The alpha-erosion fix
+    above stays as real, separate protection for source art that DOES
+    have genuine antialiased/partial-alpha edges (this batch happened not
+    to), but on its own it could never have fixed a fully-opaque source
+    like these -- there's no alpha edge for it to erode."""
     cmd = [
-        "ffmpeg", "-y", "-v", "error",
+        "ffmpeg", "-y", "-v", "error", "-sws_dither", "none",
         "-f", "lavfi", "-i", f"color=c={matte}:s={w}x{h}",
         "-i", str(png),
         "-filter_complex",
