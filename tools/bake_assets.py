@@ -102,51 +102,85 @@ def ffmpeg_to_raw(png: Path, w: int, h: int, pixfmt: str, matte: str) -> bytes:
     a blend of the two, regardless of what alpha the source PNG actually
     has at its edges.
 
-    THIRD, ROOT-CAUSE fringe source, found 2026-09 and this one explains
-    (and supersedes as "the" cause) the wizard/goblin/mushroom/star fringe
-    completely -- confirmed by baking all 4 sprites from source art that
-    tested 100% opaque (alpha=255 everywhere) with a pixel-exact matte
-    background (zero blended edge pixels, verified by decoding the PNGs
-    directly), yet ~30% of pixels in the BAKED output -- not just at
-    edges, scattered across the whole frame, including pure-matte
-    background pixels -- differed from a plain bit-truncated RGB565 pack
-    of the source by small amounts (a few units per channel), with the
-    largest excursions clustered at sharp silhouette edges. That's the
-    signature of error-diffusion DITHERING, which ffmpeg's libswscale
-    applies by default when narrowing 8-bit/channel RGBA down to 5-6-5
-    RGB565 (standard behaviour to reduce banding in photos -- actively
-    harmful for a hard colour-key where EVERY matte pixel must survive
-    bit-exact). Dithering explains everything the two fixes above don't:
-    they only ever touch pixels near an alpha transition, but a perfectly
-    flat, fully-opaque matte fill gets its exact colour perturbed too.
-    Fix: `-sws_dither none` (global ffmpeg option) turns off that
-    dithering, so the conversion is a deterministic per-pixel truncation
-    -- exact matte in, exact key out, every time. The alpha-erosion fix
-    above stays as real, separate protection for source art that DOES
-    have genuine antialiased/partial-alpha edges (this batch happened not
-    to), but on its own it could never have fixed a fully-opaque source
-    like these -- there's no alpha edge for it to erode."""
+    THIRD, ROOT-CAUSE fringe source, found 2026-09 -- confirmed by baking
+    4 sprites from source art that tested 100% opaque (alpha=255
+    everywhere) with a pixel-exact matte background (zero blended edge
+    pixels, verified by decoding the PNGs directly), yet ~30% of pixels
+    in the BAKED output -- not just at edges, scattered across the whole
+    frame, including pure-matte background pixels -- differed from a
+    plain bit-truncated RGB565 pack of the source, with the largest
+    excursions clustered at sharp silhouette edges. That's the signature
+    of error-diffusion DITHERING, which ffmpeg's libswscale applies by
+    default when narrowing 8-bit/channel RGBA down to 5-6-5 RGB565
+    (standard behaviour to reduce banding in photos -- actively harmful
+    for a hard colour-key where EVERY matte pixel must survive bit-
+    exact). Dithering explains everything the two fixes above don't:
+    they only ever touch pixels near an alpha transition, but a
+    perfectly flat, fully-opaque matte fill gets its exact colour
+    perturbed too.
+
+    First attempted fix was `-sws_dither none` as a global ffmpeg option
+    -- re-tested on-device and it did NOT change the output at all
+    (byte-identical to the un-fixed bake), meaning that option either
+    isn't reaching this conversion's internal swscale context or isn't a
+    real global CLI flag for this build (sws_dither is documented as a
+    private AVOption of the `scale`/`zscale` filters, not necessarily a
+    generic top-level flag -- a mismatch here would silently no-op
+    rather than error, and dithering is a deterministic algorithm, so
+    "same input, same ignored setting" reproducing byte-identical output
+    is exactly what a no-op looks like).
+
+    ACTUAL fix: stop asking ffmpeg to do the bit-depth reduction at all.
+    The filter graph now ends at `format=rgba` (8-bit/channel, same
+    depth as the source -- nothing for swscale to dither) and this
+    function packs RGBA to RGB565 itself in Python (see _pack_rgb565),
+    one line of bit-shifting per pixel, fully deterministic by
+    construction. This sidesteps the whole "does this ffmpeg flag
+    actually take effect" question rather than continuing to chase it.
+    The alpha-erosion fix above stays as real, separate protection for
+    source art that DOES have genuine antialiased/partial-alpha edges
+    (this batch happened not to), but on its own could never have fixed
+    a fully-opaque source like these -- there's no alpha edge for it to
+    erode."""
     cmd = [
-        "ffmpeg", "-y", "-v", "error", "-sws_dither", "none",
+        "ffmpeg", "-y", "-v", "error",
         "-f", "lavfi", "-i", f"color=c={matte}:s={w}x{h}",
         "-i", str(png),
         "-filter_complex",
         f"[1:v]format=rgba,split=2[rgba1][rgba2];"
         f"[rgba1]alphaextract,lut=y='if(gte(val,{ALPHA_THRESHOLD}),255,0)',erosion[hardalpha];"
         f"[rgba2][hardalpha]alphamerge[hardsrc];"
-        f"[0:v][hardsrc]overlay=shortest=1:format=auto,format={pixfmt}",
+        f"[0:v][hardsrc]overlay=shortest=1:format=auto,format=rgba",
         "-frames:v", "1", "-f", "rawvideo", "pipe:1",
     ]
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed on {png.name}:\n"
                            f"{proc.stderr.decode(errors='replace')}")
-    raw = proc.stdout
-    expect = w * h * 2
-    if len(raw) != expect:
+    rgba = proc.stdout
+    expect = w * h * 4
+    if len(rgba) != expect:
         raise RuntimeError(
-            f"{png.name}: ffmpeg produced {len(raw)} bytes, expected {expect}")
-    return raw
+            f"{png.name}: ffmpeg produced {len(rgba)} bytes, expected {expect}")
+    return _pack_rgb565(rgba, pixfmt.endswith("be"))
+
+
+def _pack_rgb565(rgba: bytes, big_endian: bool) -> bytes:
+    """Deterministic RGBA8 -> RGB565 pack -- plain bit truncation, no
+    dithering possible since there's no rounding decision being made
+    (see ffmpeg_to_raw()'s docstring for why ffmpeg itself doesn't do
+    this step any more)."""
+    n = len(rgba) // 4
+    out = bytearray(n * 2)
+    for i in range(n):
+        r = rgba[i * 4]; g = rgba[i * 4 + 1]; b = rgba[i * 4 + 2]
+        v = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+        oi = i * 2
+        if big_endian:
+            out[oi] = (v >> 8) & 0xFF; out[oi + 1] = v & 0xFF
+        else:
+            out[oi] = v & 0xFF; out[oi + 1] = (v >> 8) & 0xFF
+    return bytes(out)
 
 
 def compress_chunk(data: bytes) -> bytes:
