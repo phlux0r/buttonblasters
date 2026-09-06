@@ -8,5 +8,7 @@
 			"uri": "pico:"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"micropico.pyIgnore": "**/tests, **/tools"
+	}
 }
