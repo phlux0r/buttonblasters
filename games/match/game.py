@@ -82,7 +82,11 @@ _FALLBACK = (RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA)
 
 # ── Background board ─────────────────────────────────────────────
 BOARD_PATH   = "/assets/match/bgm_match_480x320.bz"  # BE, kind 1 (bgm_)
-REPLAY_TILE_PATH = "/assets/menu/btn_menu-match_280x240.bz"  # reused, 0 extra KB
+REPLAY_TILE_PATH = "/assets/menu/btn_again_280x240.bz"  # shared across games --
+                                                          # was btn_menu-match (own
+                                                          # menu tile), switched to
+                                                          # the same "Again" tile
+                                                          # every game uses now
 BACK_TILE_PATH   = "/assets/menu/btn_back_280x240.bz"          # shared across games
 HEADER_COLOR = 0xEA16      # #EB42B5 hot pink, quantized to RGB565
 HEADER_H     = 44          # pink flat zone the prompt+score live in: (0,0,480,44)
