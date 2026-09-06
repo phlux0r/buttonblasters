@@ -10,8 +10,11 @@ Filename convention (prefix picks the pipeline):
   bgraw_<name>_480x320.png  same, RAW chunks (no zlib): ~10x faster on-device
                             strip loads, ~5-10x more flash. Use for the HOT
                             backgrounds sprites animate over.
-  btn_<name>_240x300.png    button-screen background-> .bz  (RGB565 BIG-endian)
-  btnraw_<name>_240x300.png same, RAW chunks (see bgraw)
+  btn_<name>_280x240.png    button-screen background-> .bz  (RGB565 BIG-endian)
+  btnraw_<name>_280x240.png same, RAW chunks (see bgraw)
+                            (280x240 landscape, config.BTN_W/BTN_H --
+                            corrected 2026-09-06 from a wrong 300x240;
+                            see documents/HARDWARE_NOTES.md)
   spr_<name>_48x48x6.png    main-screen sprite sheet-> .sz  (LE, magenta 0xF81F key)
   sprb_<name>_48x48x4.png   button-screen sprite    -> .sz  (BE, magenta key)
 

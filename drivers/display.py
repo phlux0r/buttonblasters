@@ -2,7 +2,7 @@
 # Confirmed-working display drivers.
 #
 # ILI9488  4.0" IPS 320×480  — main screen
-# ST7789   1.69" 300×240 landscape — ×4 button screens
+# ST7789   1.69" 280×240 landscape — ×4 button screens
 #
 # Every init value is hardware-confirmed. Do not simplify.
 #
@@ -211,7 +211,7 @@ def set_btn_backlight(on: bool):
 class ST7789:
     """
     ST7789 1.69" button display driver.
-    Critical: full LovyanGFX init, BLK=GP13 HIGH, 300×240 landscape window.
+    Critical: full LovyanGFX init, BLK=GP13 HIGH, 280×240 landscape window.
     MADCTL is PER-BUTTON (config.ST7789_MADCTL[index]), not uniform — the
     2x2 shell mounts BTN-2/3 physically rotated 180° from BTN-0/1, so they
     need a different MADCTL to compensate. See config.py's comment on
