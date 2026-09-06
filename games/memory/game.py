@@ -69,8 +69,8 @@ PRESS_LIT_MS = 220     # how long a player's own press flashes back
 ROUND_GAP_MS = 500     # pause after a correct round before the sequence grows
 
 RESULT_BG = rgb(20, 10, 50)
-BACK_TILE_PATH  = "/assets/menu/btn_back_300x240.bz"     # shared across games
-AGAIN_TILE_PATH = "/assets/menu/btn_again_300x240.bz"    # shared across games
+BACK_TILE_PATH  = "/assets/menu/btn_back_280x240.bz"     # shared across games
+AGAIN_TILE_PATH = "/assets/menu/btn_again_280x240.bz"    # shared across games
 RESULT_PATH     = "/assets/memory/bgm_result_480x320.bz"
 RESULT_SCORE_Y  = 135   # score overlay y, scale-2 (was 120, then 125 -- lowered
                          # another 10px per feedback on the real art)
@@ -341,7 +341,7 @@ class ButtonMemoryGame(BaseGame):
                 return "again"
 
     async def _show_back_fallback(self, idx):
-        # Only used if btn_back_300x240.bz is somehow missing -- normally
+        # Only used if btn_back_280x240.bz is somehow missing -- normally
         # paint_btn_bg() above finds the shared asset every other game uses.
         bg = rgb(60, 15, 15)
         await self.display.fill_btn(idx, bg)
@@ -352,7 +352,7 @@ class ButtonMemoryGame(BaseGame):
                                     config.BTN_H // 2 - 4, WHITE, bg, scale=1)
 
     async def _show_replay_fallback(self, idx):
-        # Only used if btn_again_300x240.bz is somehow missing.
+        # Only used if btn_again_280x240.bz is somehow missing.
         bg = rgb(15, 60, 20)
         await self.display.fill_btn(idx, bg)
         await self.display.draw_btn_border(idx, rgb(60, 200, 90))

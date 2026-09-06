@@ -11,9 +11,10 @@
 # missing on each side, on the REAL physical panel.
 #
 # Uses the confirmed-working init sequence and BTN_W/BTN_H from config.py
-# as the addressing window (currently 300x240) -- this test does NOT
-# change that window, it just marks it up so you can see precisely what's
-# happening inside it.
+# as the addressing window, and applies the same config.BTN_COL_OFFSET
+# the real driver's ST7789._set_window() applies -- so this marks up
+# whatever config.py currently says (280x240 + a 20px offset, as of the
+# fix this test's own measurement led to) rather than testing blind.
 #
 # HOW TO READ THE RESULT:
 #   - Solid colour fills the WHOLE visible glass edge-to-edge, no gaps,
