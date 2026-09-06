@@ -114,8 +114,11 @@ LEGEND_BG    = WHITE                 # populated-target tile bg -- matches
 FALLBACK_BOARD_COLOR = rgb(30, 70, 40)   # flat meadow, used if the real
                                           # board asset is missing/invalid
 
-REPLAY_TILE_PATH = "/assets/menu/btn_menu-bonk_280x240.bz"   # own menu tile,
-                                                              # reused, 0 extra KB
+REPLAY_TILE_PATH = "/assets/menu/btn_again_280x240.bz"   # shared across games --
+                                                          # was btn_menu-bonk (own
+                                                          # menu tile), switched to
+                                                          # the same "Again" tile
+                                                          # every game uses now
 BACK_TILE_PATH   = "/assets/menu/btn_back_280x240.bz"        # shared across games
 
 # Module-level, seated ONCE per power-on session (not re-allocated every

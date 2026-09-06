@@ -100,14 +100,31 @@ def ffmpeg_to_raw(png: Path, w: int, h: int, pixfmt: str, matte: str) -> bytes:
     threshold alpha to 0/255 BEFORE compositing, so overlay always either
     keeps the source pixel's exact RGB or reveals the exact matte -- never
     a blend of the two, regardless of what alpha the source PNG actually
-    has at its edges."""
+    has at its edges.
+
+    SECOND, DISTINCT fringe source (found 2026-09 by decoding shipped
+    spr_wizard/spr_goblin .sz files and diffing pixels against the exact
+    key -- a 1px-wide ring of near-magenta-but-not-key colours sat right
+    at the silhouette boundary, on BOTH sprites, even after the source art
+    was re-exported with shape/stroke antialiasing OFF): a pixel can have
+    alpha >= ALPHA_THRESHOLD (correctly kept "opaque" by the fix above)
+    while its RGB is ALREADY blended toward the matte colour, baked in by
+    whatever resampling the art tool did when flattening/resizing to
+    96x96 -- independent of the shape antialiasing setting, which only
+    affects the vector render, not a later raster resize. Hard-
+    thresholding alpha can't fix a contaminated RGB value on a pixel it
+    correctly decided to keep. Fix: erode the hard alpha mask by 1px
+    (ffmpeg's `erosion` filter, default 3x3 min-filter) before merging --
+    this reclassifies that outer contaminated ring as background instead
+    of opaque, at the cost of the silhouette shrinking by ~1px all round
+    (invisible at 96x96 against the fringe it removes)."""
     cmd = [
         "ffmpeg", "-y", "-v", "error",
         "-f", "lavfi", "-i", f"color=c={matte}:s={w}x{h}",
         "-i", str(png),
         "-filter_complex",
         f"[1:v]format=rgba,split=2[rgba1][rgba2];"
-        f"[rgba1]alphaextract,lut=y='if(gte(val,{ALPHA_THRESHOLD}),255,0)'[hardalpha];"
+        f"[rgba1]alphaextract,lut=y='if(gte(val,{ALPHA_THRESHOLD}),255,0)',erosion[hardalpha];"
         f"[rgba2][hardalpha]alphamerge[hardsrc];"
         f"[0:v][hardsrc]overlay=shortest=1:format=auto,format={pixfmt}",
         "-frames:v", "1", "-f", "rawvideo", "pipe:1",
