@@ -265,6 +265,14 @@ class ST7789:
         self._wc(0x29); time.sleep_ms(255)
 
     def _set_window(self, x0, y0, x1, y1):
+        # Ruler-measured (tests/test_16_button_edge_probe.py, see
+        # config.BTN_COL_OFFSET): the true visible glass is native columns
+        # 20..299, not 0..299 -- every caller passes LOGICAL 0-based
+        # coordinates against config.BTN_W (280), so shift into native
+        # column space here, once, rather than at every call site. Y is
+        # untouched -- no evidence of a row offset, this is X-only.
+        off = config.BTN_COL_OFFSET
+        x0 += off; x1 += off
         self._wc(0x2A); self._wd(x0>>8,x0&0xFF,x1>>8,x1&0xFF)
         self._wc(0x2B); self._wd(y0>>8,y0&0xFF,y1>>8,y1&0xFF)
         # RAMWR (0x2C): keep CS LOW so the pixel stream is sent as this

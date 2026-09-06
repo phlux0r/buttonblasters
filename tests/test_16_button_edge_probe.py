@@ -95,7 +95,12 @@ def fill_rect(r, g, b, x0, y0, x1, y1):
     hi = c >> 8; lo = c & 0xFF
     total = (x1 - x0 + 1) * (y1 - y0 + 1)
     chunk = bytes([hi, lo] * 128)
-    wc(0x2A); wd(x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF)
+    # Apply the same offset drivers/display.py's ST7789._set_window() now
+    # applies -- logical x0/x1 here are 0-based against config.BTN_W, the
+    # panel's native columns are shifted by BTN_COL_OFFSET.
+    off = config.BTN_COL_OFFSET
+    nx0, nx1 = x0 + off, x1 + off
+    wc(0x2A); wd(nx0 >> 8, nx0 & 0xFF, nx1 >> 8, nx1 & 0xFF)
     wc(0x2B); wd(y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF)
     wc(0x2C)
     dc.value(1); cs.value(0)

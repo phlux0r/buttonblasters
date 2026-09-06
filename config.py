@@ -75,12 +75,23 @@ ILI9488_MADCTL = 0x28   # landscape. Rotation options (all BGR):
 #   0x48 = portrait (current)      0x28 = landscape
 #   0x88 = portrait flipped        0xE8 = landscape flipped (180° of 0x28)
 
-# ── ST7789 button displays (×4, 1.69" 300×240 landscape) ─────────
+# ── ST7789 button displays (×4, 1.69" 280×240 landscape) ─────────
+# Ruler-measured on-device 2026-09-06 (tests/test_16_button_edge_probe.py):
+# true visible glass is native columns 20..299 (280 wide), not 0..299
+# (300 wide) as originally assumed. 28/30 top ticks (10px apart) visible,
+# first visible tick at x=20 landing flush against the true left edge;
+# 23/24 left ticks visible, the one miss (y=0) explained by the top-left
+# corner rounding rather than a separate row crop -- no evidence of any
+# row/Y offset needed, this is X-only. A prior attempt at just narrowing
+# BTN_W to 280 (no offset) made it worse, not better: that still starts
+# addressing at column 0, so it neither reaches the true window nor
+# covers it -- needs BOTH the corrected width AND the offset together.
+BTN_COL_OFFSET = 20   # added to every ST7789 _set_window() x0/x1
 PIN_CS_BTN   = (7, 8, 9, 10)
 PIN_DC_BTN   = (2, 11, 14, 21)   # GP2 for BTN-0 (GP5 is DEAD)
 PIN_RST_BTN  = 15                  # shared reset
 PIN_BLK_BTN  = 13                  # MUST be driven HIGH from GPIO
-BTN_W        = 300
+BTN_W        = 280
 BTN_H        = 240
 NUM_BTN_SCREENS = 4
 # Per-button MADCTL — NOT uniform. Physical mounting is a 2x2 matrix
