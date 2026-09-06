@@ -39,7 +39,12 @@ CS_IDX = 0   # which button to probe: 0-3 (indices into config.PIN_CS_BTN)
 
 W, H = config.BTN_W, config.BTN_H
 TICK_EVERY = 10     # a tick mark every 10px from each edge
-TICK_LEN   = 6      # how far each tick mark extends inward
+TICK_LEN   = 40     # was 6 -- too short to clear the rounded-corner bezel
+                     # cutting off content right at the edge, and short
+                     # enough that the WHOLE left-edge tick column (x=2..7)
+                     # could sit entirely inside a crop deeper than that,
+                     # explaining "no ticks visible on the left at all"
+                     # rather than just the corner-adjacent ones
 TICK_THICK = 2       # tick mark thickness
 
 blk     = Pin(config.PIN_BLK_BTN, Pin.OUT, value=1)
@@ -139,9 +144,11 @@ while y < H:
     y += TICK_EVERY
     i += 1
 
-print(f"  Ruler drawn: ticks every {TICK_EVERY}px from top (RED/ORANGE)")
-print(f"  and left (BLUE/CYAN) edges, black border flush at the logical")
-print(f"  0..{W-1} x 0..{H-1} window.")
+print(f"  Ruler drawn: {TICK_LEN}px stripes every {TICK_EVERY}px from top")
+print(f"  (RED/ORANGE) and left (BLUE/CYAN) edges -- long enough to overlap")
+print(f"  each other (that's expected, alternating colour still marks each")
+print(f"  10px position) and to clear a rounded-corner bezel. Black border")
+print(f"  flush at the logical 0..{W-1} x 0..{H-1} window.")
 print()
 print("  Look at the panel now:")
 print("   - Is there a white gap between the black border and the true")
