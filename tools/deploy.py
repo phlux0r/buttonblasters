@@ -2,8 +2,14 @@
 """
 deploy.py — stage and install Button Blasters onto the Pico 2 W.
 
-The repo layout is NOT the device layout. This script encodes the mapping
-so installs are reproducible instead of hand-copied:
+The repo layout mirrors the device layout directly as of 2026-09
+(assets/static/<game>/ holds each game's Tier A sprites pre-sorted, same
+as it appears on littlefs) -- this script no longer sorts sprites out of
+a flat per-game folder by filename prefix, it just mirrors what's
+already sorted in the repo. Only the SD-bound Tier B backgrounds still
+live in a flat per-game folder (assets/<game>/), since those aren't
+part of the on-device littlefs layout at all until game_cache installs
+them at game load:
 
   repo                          device (littlefs)
   ----                          -----------------
@@ -12,12 +18,15 @@ so installs are reproducible instead of hand-copied:
   drivers/, core/, games/       /drivers, /core, /games
   assets/menu/                  /assets/menu      (Tier A — permanent)
   assets/sys/                   /assets/sys       (Tier A — permanent)
-  assets/match/sprb_*.sz        /assets/static/match  (Tier A — permanent)
+  assets/static/                /assets/static     (Tier A — permanent,
+                                                     mirrored as-is)
 
   repo                          SD card
   ----                          -------
   assets/match/bgm_*.bz         /sd/assets/match  (Tier B — game_cache
-                                installs to /assets/match at game load)
+  (everything else under a      installs to /assets/<id> at game load)
+   per-game assets/<id>/ folder,
+   i.e. NOT menu/sys/static)
 
 Never deployed: tests/, documents/, tools/, *.md — they only waste flash.
 
@@ -69,45 +78,40 @@ def stage():
         shutil.copytree(REPO / pkg, STAGE_FW / pkg,
                         ignore=shutil.ignore_patterns("__pycache__"))
 
-    # Tier A assets — permanent littlefs residents.
+    # Tier A assets — permanent littlefs residents. assets/static/<id>/ is
+    # already pre-sorted in the repo (sprb_*/spr_* sprites only, one
+    # subfolder per game) -- mirrored wholesale, no filename sniffing
+    # needed here any more; that used to happen in this script, now it
+    # happens once, by hand, when art is baked (see tools/bake_assets.py).
     shutil.copytree(REPO / "assets" / "menu", STAGE_FW / "assets" / "menu")
     shutil.copytree(REPO / "assets" / "sys",  STAGE_FW / "assets" / "sys")
+    static_src = REPO / "assets" / "static"
+    if static_src.is_dir():
+        shutil.copytree(static_src, STAGE_FW / "assets" / "static")
 
-    # Per-game asset split, by filename prefix (applies to every game
-    # folder under assets/ except menu/sys, which are handled above):
-    #   sprb_*, spr_*  (small sprites, .sz)   -> Tier A, /assets/static/<id>/
-    #   bgm_*,  bg_*   (large backgrounds,    -> Tier B, staged for the SD
-    #                   .bz)                     card, installed by
-    #                                             game_cache at game load
-    SPRITE_PREFIXES     = ("sprb_", "spr_")
-    BACKGROUND_PREFIXES = ("bgm_", "bg_")
-    SKIP_DIRS = {"menu", "sys"}
+    # Everything remaining under assets/ (i.e. every per-game folder that
+    # isn't menu/sys/static) holds ONLY Tier B backgrounds now -- staged
+    # wholesale for the SD card, installed to littlefs by game_cache at
+    # game load and evicted at unload (see core/game_cache.py).
+    SPRITE_PREFIXES = ("sprb_", "spr_")
+    SKIP_DIRS = {"menu", "sys", "static"}
     for game_dir in sorted((REPO / "assets").iterdir()):
         if not game_dir.is_dir() or game_dir.name in SKIP_DIRS:
             continue
         game_id = game_dir.name
-        sprites = [f for f in game_dir.glob("*.sz")
-                  if f.name.startswith(SPRITE_PREFIXES)]
-        backgrounds = [f for f in game_dir.glob("*.bz")
-                      if f.name.startswith(BACKGROUND_PREFIXES)]
-
-        if sprites:
-            static_dir = STAGE_FW / "assets" / "static" / game_id
-            static_dir.mkdir(parents=True)
-            for f in sprites:
-                shutil.copy2(f, static_dir / f.name)
-
-        if backgrounds:
-            sd_dir = STAGE_SD / "assets" / game_id
-            sd_dir.mkdir(parents=True)
-            for f in backgrounds:
-                shutil.copy2(f, sd_dir / f.name)
-
-        unclassified = (set(game_dir.glob("*.sz")) | set(game_dir.glob("*.bz"))) \
-                        - set(sprites) - set(backgrounds)
-        for f in sorted(unclassified):
-            print(f"[deploy] warning: {f} matches no known prefix "
-                 f"({SPRITE_PREFIXES + BACKGROUND_PREFIXES}) — not staged")
+        files = sorted(f for f in game_dir.iterdir() if f.is_file())
+        if not files:
+            continue
+        sd_dir = STAGE_SD / "assets" / game_id
+        sd_dir.mkdir(parents=True)
+        for f in files:
+            if f.name.startswith(SPRITE_PREFIXES):
+                print(f"[deploy] warning: {f} looks like a Tier A sprite "
+                     f"but sits in assets/{game_id}/, not "
+                     f"assets/static/{game_id}/ -- staging it to the SD "
+                     f"card as a background anyway, but this is probably "
+                     f"a misplaced file, not what you want")
+            shutil.copy2(f, sd_dir / f.name)
 
 
 def cross_compile():
