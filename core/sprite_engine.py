@@ -9,7 +9,8 @@ dirty strips, and re-renders only what changed. All heavy pixel work is
 
 Caps enforced/assumed:
   * <= 8 sprites per scene (MAX_ACTIVE)
-  * velocity clamped to <= 32 px per tick per axis (one strip height)
+  * velocity clamped to <= 32 px per tick per axis (MAX_STEP -- NOT tied to
+    STRIP_H, which is 8; a full-step move dirties several strips, not one)
   * sprite frames come from flash_assets.SpriteSheet (<=96x96, <=8 frames,
     96KB arena budget — enforced there)
 

@@ -198,10 +198,17 @@ class DisplayManager:
                            w: int, h: int, x=0, y=0):
         await self.btns[idx].blit_rgb565(memoryview(buf), x, y, w, h)
 
-    async def paint_main_bg(self, path, arena=None):
-        """Stream a BE (kind 1) 480x320 background from flash to the main
-        display, one strip at a time via an arena-borrowed buffer. Returns
-        True if painted, False on any error (caller supplies the fallback).
+    async def paint_main_bg(self, path, arena=None, x=0, y=0):
+        """Stream a BE (kind 1) background from flash to the main display,
+        one strip at a time via an arena-borrowed buffer. Returns True if
+        painted, False on any error (caller supplies the fallback).
+
+        x, y: top-left placement on the main display. Default (0, 0) paints
+        full-screen exactly as before -- every existing caller is
+        unaffected. A non-zero offset lets a SMALLER image (e.g. a recipe
+        card narrower/shorter than the full 480x320) blit into a sub-region
+        of whatever's already on screen, instead of requiring every bg
+        asset to be a full-screen image.
 
         arena: bump-arena to borrow the per-strip scratch buffer from.
         Defaults to the shared flash_assets.arena, which is safe for
@@ -228,7 +235,7 @@ class DisplayManager:
             for i in range(bg.n_strips):
                 rows = bg.read_strip(i, buf)
                 await self.main.blit_rgb565(
-                    buf[:bg.w * rows * 2], 0, i * bg.strip_h, bg.w, rows)
+                    buf[:bg.w * rows * 2], x, y + i * bg.strip_h, bg.w, rows)
                 await asyncio.sleep_ms(0)
             return True
         except Exception as e:
