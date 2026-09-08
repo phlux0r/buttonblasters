@@ -197,7 +197,8 @@ TRACK_MIN  = BELT_X_LEFT
 TRACK_MAX  = BELT_X_RIGHT - ICON
 TRACK_SPAN = TRACK_MAX - TRACK_MIN
 DRIFT_PX_PER_TICK = 1
-BELT_TICK_MS = 90
+BELT_TICK_MS = 60      # was 90 (~11fps); trying ~16.7fps -- watch for any
+                       # audio/button stutter this steals bandwidth from
 # Deliberately equal to BELT_TICK_MS, not independent of it -- movement
 # happens in THIS loop (LOOP_TICK_MS-paced) but the actual screen redraw
 # happens on SpriteEngine.start()'s own, separately-scheduled task
