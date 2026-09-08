@@ -196,7 +196,16 @@ _blk_pin = None
 def _ensure_blk():
     global _blk_pin
     if _blk_pin is None:
-        _blk_pin = Pin(config.PIN_BLK_BTN, Pin.OUT, value=1)
+        # Starts OFF (value=0), not ON -- this pin gets constructed the
+        # instant the first ST7789 is built (see ST7789.__init__ below),
+        # which happens right at the start of boot via display.init_all(),
+        # long before any real content is ever painted to the button
+        # screens (that doesn't happen until core/menu.py's Menu.run()
+        # does its first render, well after touch/audio/LEDs/SD init).
+        # Starting backlight ON meant every boot showed raw, uninitialized
+        # panel RAM (visible noise) for that whole window; core/menu.py
+        # turns it on explicitly once real content is actually on screen.
+        _blk_pin = Pin(config.PIN_BLK_BTN, Pin.OUT, value=0)
 
 
 def set_btn_backlight(on: bool):
