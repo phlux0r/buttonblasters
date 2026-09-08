@@ -92,6 +92,29 @@ class AppKernel:
         display.main.warm_blit_scratch()
         print(f"[kernel] heap after blit scratch: free={gc.mem_free()}")
 
+        # 1a-pre2. Pre-grow the shared text-scratch buffers to the largest
+        # size any game will ever ask for (currently Bonk's scale-10 "GO!",
+        # 38.4KB) here, right after blit scratch and BEFORE the strip pool/
+        # flash_assets arena below -- instead of letting that grow happen
+        # lazily mid-game on a fragmented heap. This used to run dead last
+        # in the sequence (after all four other reservations) and started
+        # failing there once Magic Bakery's game module was added to
+        # games/registry.py: "allocating 18816 bytes" failed with 128768B
+        # nominally free -- 7x more than needed, a fragmentation signature,
+        # not a shortage (same pattern documented for Bonk's scratch arena
+        # above). Bakery's own module bytecode/constants get loaded at
+        # registry-import time, before AppKernel.init() even starts, so
+        # that addition isn't reorderable via anything in this function --
+        # but moving THIS allocation earlier, ahead of the strip pool's
+        # four-piece carve-up and flash_assets.init()'s single 96KB block,
+        # gives its comparatively small 18.8KB request a much less
+        # fragmented heap to find room in. It's a single-buffer alloc like
+        # blit scratch, not spatially demanding like flash_assets' 96KB
+        # block, so moving it this early costs the two big reservations
+        # below very little of their own "freshest heap" advantage.
+        warm_text_scratch()
+        print(f"[kernel] heap after text scratch: free={gc.mem_free()}")
+
         # 1a. Seat the main-screen strip buffer pool FIRST, on the freshest
         # heap of all — before even flash_assets.init() below. Confirmed on
         # hardware: this pool's per-game-session seat/free cycle (via
@@ -115,14 +138,6 @@ class AppKernel:
         # card paints (paint_main_bg borrows the arena). One 96KB alloc.
         flash_assets.init()
         print(f"[kernel] heap after flash_assets arena: free={gc.mem_free()}")
-
-        # 1c. Same argument, same freshest-heap moment: pre-grow the shared
-        # text-scratch buffers to the largest size any game will ever ask
-        # for (currently Bonk's scale-10 "GO!", 38.4KB), instead of letting
-        # that grow happen lazily mid-game on a fragmented heap — confirmed
-        # on hardware to MemoryError there otherwise.
-        warm_text_scratch()
-        print(f"[kernel] heap after text scratch: free={gc.mem_free()}")
 
         # Boot splash — baked card if present, else the text splash.
         if not await display.paint_main_bg(_BOOT_BG):
