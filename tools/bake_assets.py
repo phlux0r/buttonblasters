@@ -34,8 +34,10 @@ Output file format ("BBA1", all header ints little-endian):
   16  n_chunks * (u32 offset, u32 comp_len)   offsets relative to data start
   ... data (each chunk an independent zlib stream, wbits=10 -> 1KB window)
 
-Each background chunk is one 32-row strip (last strip may be shorter).
-Each sprite chunk is one whole frame.
+Each background chunk is one strip -- 8 rows for kind 0 (LE, bg_/bgraw_,
+must match core/sprite_engine.py's hard-enforced STRIP_H), 32 rows for
+kind 1 (BE, bgm_/btn_, no such runtime constraint) -- last strip may be
+shorter. Each sprite chunk is one whole frame.
 """
 
 import argparse
@@ -46,7 +48,22 @@ import sys
 import zlib
 from pathlib import Path
 
-STRIP_H = 32
+# Kind 1 (BE, bgm_/btn_) backgrounds only ever get read strip-by-strip via
+# paint_main_bg()/paint_btn_bg(), which has no fixed-size expectation --
+# any chunk height works, this is just a size/chunk-count tuning knob.
+BG_CHUNK_H = 32
+
+# Kind 0 (LE, bg_/bgraw_) backgrounds are different: they're the only kind
+# fed to core/sprite_engine.py's SpriteEngine, and
+# SpriteEngine.set_background() hard-requires bg.strip_h == STRIP_H (the
+# constant imported there from drivers/strip_renderer.py) before it will
+# accept the background at all -- a mismatch raises ValueError immediately,
+# which is exactly the "background strip_h != 8" failure this constant
+# used to cause for every kind-0 asset (this file baked them all at 32).
+# MUST match drivers/strip_renderer.py's STRIP_H; can't import it here,
+# this tool runs on desktop Python, not MicroPython on the device.
+MAIN_STRIP_H = 8
+
 WBITS = 10                    # 1KB decompressor window on-device
 MAGIC = b"BBA1"
 ALPHA_THRESHOLD = 128         # hard cutout point -- see ffmpeg_to_raw()
@@ -207,8 +224,8 @@ def write_asset(out: Path, kind: int, strip_h: int, w: int, h: int,
     return len(header) + len(table) + offset
 
 
-def bake_background(raw: bytes, w: int, h: int, store_raw: bool):
-    """Chunk into STRIP_H-row strips; last strip may be partial.
+def bake_background(raw: bytes, w: int, h: int, store_raw: bool, chunk_h: int):
+    """Chunk into chunk_h-row strips; last strip may be partial.
     store_raw=True keeps chunks as raw RGB565 (no zlib) for the fast
     on-device read_strip path -- ~10x cheaper to load, ~5-10x more flash.
     Use for HOT backgrounds that sprites animate over."""
@@ -216,7 +233,7 @@ def bake_background(raw: bytes, w: int, h: int, store_raw: bool):
     row_bytes = w * 2
     y = 0
     while y < h:
-        rows = min(STRIP_H, h - y)
+        rows = min(chunk_h, h - y)
         chunk = raw[y * row_bytes:(y + rows) * row_bytes]
         chunks.append(chunk if store_raw else compress_chunk(chunk))
         y += rows
@@ -281,8 +298,9 @@ def bake_file(png: Path, art_root: Path, build_root: Path, force: bool):
         chunks = bake_sprite(raw, sheet_w, w, h, frames)
         size = write_asset(out, kind, h, w, h, frames, chunks, flags)
     else:
-        chunks = bake_background(raw, w, h, bool(flags & FLAG_RAW))
-        size = write_asset(out, kind, STRIP_H, w, h, 1, chunks, flags)
+        chunk_h = MAIN_STRIP_H if kind == 0 else BG_CHUNK_H
+        chunks = bake_background(raw, w, h, bool(flags & FLAG_RAW), chunk_h)
+        size = write_asset(out, kind, chunk_h, w, h, 1, chunks, flags)
 
     ratio = size / len(raw)
     return ("bake", rel, size, len(raw), ratio, out)
