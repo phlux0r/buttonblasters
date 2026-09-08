@@ -21,9 +21,9 @@
 # (voice names + recipe intros) should be baked/installed as Tier B audio
 # for this game (not left to the SD fallback) so the fast path is used.
 #
-# MEMORY NOTE — the ingredient pool is 9 items, but flash_assets.arena is
-# a shared 96KB bump arena and each 96x96 LE sprite is ~18.4KB — 9 of them
-# (~166KB) would blow that budget outright, unlike Star Bonk!'s fixed 4
+# MEMORY NOTE — the ingredient pool is 10 items, but flash_assets.arena is
+# a shared 96KB bump arena and each 96x96 LE sprite is ~18.4KB — all 10 of
+# them (~184KB) would blow that budget outright, unlike Star Bonk!'s fixed 4
 # characters (~74KB) which fit for the whole game. So unlike Bonk, this
 # game reloads its LE sprite pool PER ROUND (same discipline Match It!
 # uses for its 18-icon rotation): each round only loads the 4 ingredients
@@ -75,10 +75,10 @@
 #     no live sprite_engine repaint left to fight over the frame.
 #   bakery/bgm_result_480x320.bz       BE, kind 1 -- end-of-game screen.
 #   static/bakery/spr_<ingredient>_96x96x1.sz   LE, kind 2, magenta-keyed --
-#     main-screen belt sprite. One per ingredient (9): flour, egg, sugar,
-#     butter, milk, chocolate, cheese, tomato-sauce, sprinkles.
+#     main-screen belt sprite. One per ingredient (10): flour, egg, sugar,
+#     butter, milk, chocolate, cheese, tomato-sauce, sprinkles, mushrooms.
 #   static/bakery/sprb_<ingredient>_96x96x1.sz  BE, kind 3, opaque -- the
-#     button-screen "parked ingredient" icon. Same 9 names.
+#     button-screen "parked ingredient" icon. Same 10 names.
 #   menu/bgm_menu-bakery_480x320.bz, menu/btn_menu-bakery_280x240.bz --
 #     carousel card/tile, same convention as every other game.
 #
@@ -107,15 +107,15 @@ from drivers import flash_assets
 from drivers.touch import TOUCH_TAP
 
 # ── Content ──────────────────────────────────────────────────────
-INGREDIENTS = ("flour", "egg", "sugar", "butter", "milk",
-               "chocolate", "cheese", "tomato-sauce", "sprinkles")
+INGREDIENTS = ("flour", "egg", "sugar", "butter", "milk", "chocolate",
+               "cheese", "tomato-sauce", "sprinkles", "mushrooms")
 
 RECIPES = {
     "cake":     ("flour", "egg", "sugar", "butter"),
     "cookies":  ("flour", "sugar", "butter", "chocolate"),
     "cupcake":  ("flour", "egg", "sugar", "sprinkles"),
     "pancakes": ("flour", "egg", "milk", "butter"),
-    "pizza":    ("flour", "tomato-sauce", "cheese", "egg"),
+    "pizza":    ("flour", "tomato-sauce", "cheese", "mushrooms"),
     "donut":    ("flour", "egg", "sugar", "chocolate"),
 }
 RECIPE_NAMES = tuple(RECIPES.keys())
