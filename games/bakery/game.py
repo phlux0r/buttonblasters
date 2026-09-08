@@ -38,9 +38,9 @@
 # card + end-screen paints, kept separate from the shared arena that holds
 # the round's persistent LE belt sprites.
 #
-# LAYOUT — main screen is 480x320. The recipe/baked card (280x175) sits at
+# LAYOUT — main screen is 480x320. The recipe card (280x175) sits at
 # (x=100, y=15), matching the pre-composed frame baked into the board art;
-# its bottom edge is row 189 (15+175-1). This split matters at the
+# its bottom edge is row 189 (15+175-1). This position matters at the
 # sprite_engine dirty-tracking granularity (STRIP_H=8 in
 # drivers/strip_renderer.py, NOT the unrelated 32-row chunking
 # tools/bake_assets.py uses when BAKING a file): the card is painted via
@@ -54,6 +54,12 @@
 # BELT_SPRITE_Y in the Geometry section: shrinking the card from 200px to
 # 175px tall closed most of the previous conflict but not quite all of it.
 #
+# The baked reveal at the end of a round is a separate, full-screen
+# (480x320) asset, not a card blit -- shown after the belt loop's
+# `finally: await self._engine.stop()` has ended the round's background
+# tick task, so there's no live sprite_engine repaint left to fight over
+# the frame and no dirty-tracking concern for it.
+#
 # ASSETS:
 #   bakery/bg_bakery_480x320.bz        LE, kind 0, strip_h=8 -- the belt
 #     board. sprite_engine composites drifting ingredients over this; the
@@ -61,9 +67,11 @@
 #     or a matching frame in this art (the recipe/baked card blits on top
 #     of it separately, at the same x=100,y=15 offset).
 #   bakery/bgm_recipe-<name>_280x175.bz   BE, kind 1 -- one per recipe (6),
-#     shown while that recipe is active.
-#   bakery/bgm_baked-<name>_280x175.bz    BE, kind 1 -- one per recipe (6),
-#     swapped in over the same rect once the recipe is complete.
+#     card-sized, shown while that recipe is active.
+#   bakery/bgm_baked-<name>_480x320.bz    BE, kind 1 -- one per recipe (6),
+#     FULL SCREEN (not a card blit) -- shown once the recipe is complete,
+#     after the belt/engine has already stopped for the round, so there's
+#     no live sprite_engine repaint left to fight over the frame.
 #   bakery/bgm_result_480x320.bz       BE, kind 1 -- end-of-game screen.
 #   static/bakery/spr_<ingredient>_96x96x1.sz   LE, kind 2, magenta-keyed --
 #     main-screen belt sprite. One per ingredient (9): flour, egg, sugar,
@@ -118,7 +126,9 @@ ASSET_DIR   = "/assets/static/bakery/"           # Tier A: always resident
 BOARD_PATH  = "/assets/bakery/bg_bakery_480x320.bz"        # Tier B
 RESULT_PATH = "/assets/bakery/bgm_result_480x320.bz"       # Tier B
 RECIPE_CARD_PATH = "/assets/bakery/bgm_recipe-%s_280x175.bz"
-BAKED_CARD_PATH  = "/assets/bakery/bgm_baked-%s_280x175.bz"
+BAKED_CARD_PATH  = "/assets/bakery/bgm_baked-%s_480x320.bz"   # full screen, not
+                                                               # a card blit --
+                                                               # see _play_round
 BACK_TILE_PATH   = "/assets/menu/btn_back_280x240.bz"      # shared across games
 AGAIN_TILE_PATH  = "/assets/menu/btn_again_280x240.bz"     # shared across games
 
@@ -364,7 +374,7 @@ class MagicBakeryGame(BaseGame):
         if not await self.display.paint_main_bg(
                 RECIPE_CARD_PATH % recipe, arena=self._scratch_arena,
                 x=CARD_X, y=CARD_Y):
-            await self._show_card_fallback(recipe, baked=False)
+            await self._show_card_fallback(recipe)
 
         if self.audio and self.audio.ready:
             await self.audio.play_voice("bake_%s.wav" % recipe, wait=True)
@@ -418,12 +428,16 @@ class MagicBakeryGame(BaseGame):
         elapsed_ms = time.ticks_diff(time.ticks_ms(), round_start_ms)
         self._total_elapsed_ms += elapsed_ms
 
+        # Full-screen reveal, not a card-rect blit -- the belt loop's
+        # `finally: await self._engine.stop()` above has already ended the
+        # background tick task, so there's no live sprite_engine repaint
+        # left to fight over the frame; a plain full-screen paint_main_bg()
+        # (default x=0,y=0) is all this needs.
         if await self.display.paint_main_bg(
-                BAKED_CARD_PATH % recipe, arena=self._scratch_arena,
-                x=CARD_X, y=CARD_Y):
+                BAKED_CARD_PATH % recipe, arena=self._scratch_arena):
             pass
         else:
-            await self._show_card_fallback(recipe, baked=True)
+            await self._show_baked_fallback(recipe)
 
         if self.leds and self.leds.ready:
             self.leds.start_effect(self.leds.correct_flash())
@@ -565,12 +579,22 @@ class MagicBakeryGame(BaseGame):
 
     # ── Fallback drawing (missing assets) ─────────────────────────
 
-    async def _show_card_fallback(self, recipe, baked):
-        label = ("Baked: " if baked else "Bake a ") + recipe + "!"
+    async def _show_card_fallback(self, recipe):
+        label = "Bake a " + recipe + "!"
         bg = rgb(60, 40, 15)
         await self.display.main.fill(bg, CARD_X, CARD_Y, CARD_W, CARD_H)
         tx = CARD_X + CARD_W // 2 - len(label) * 8
         await self.display.text_main(label, max(CARD_X, tx), CARD_Y + CARD_H // 2 - 8,
+                                     WHITE, bg, scale=2)
+
+    async def _show_baked_fallback(self, recipe):
+        """BAKED_CARD_PATH is a full-screen (480x320) asset now, not a card
+        blit -- fallback fills the whole main screen to match."""
+        label = "Baked: " + recipe + "!"
+        bg = rgb(60, 40, 15)
+        await self.display.main.fill(bg, 0, 0, config.MAIN_W, config.MAIN_H)
+        tx = config.MAIN_W // 2 - len(label) * 8
+        await self.display.text_main(label, max(0, tx), config.MAIN_H // 2 - 8,
                                      WHITE, bg, scale=2)
 
     # ── End screen ───────────────────────────────────────────────
