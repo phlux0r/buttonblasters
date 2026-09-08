@@ -38,34 +38,31 @@
 # card + end-screen paints, kept separate from the shared arena that holds
 # the round's persistent LE belt sprites.
 #
-# LAYOUT — main screen is 480x320. The recipe/baked card (280x200) sits at
-# (x=100, y=15), matching the pre-composed frame baked into the board art.
-# The belt/drift lane occupies y=216-320 (104px, ingredient sprites
-# vertically centered at y=220). This split is deliberate at the
+# LAYOUT — main screen is 480x320. The recipe/baked card (280x175) sits at
+# (x=100, y=15), matching the pre-composed frame baked into the board art;
+# its bottom edge is row 189 (15+175-1). This split matters at the
 # sprite_engine dirty-tracking granularity (STRIP_H=8 in
 # drivers/strip_renderer.py, NOT the unrelated 32-row chunking
 # tools/bake_assets.py uses when BAKING a file): the card is painted via
 # plain paint_main_bg(), entirely outside sprite_engine's tracking, so if
 # a drifting sprite's dirty strip ever overlapped the card's rows, the
 # engine would repaint straight from the board art and erase the card.
-# Since CARD_Y=15 isn't itself strip-aligned, the card's own bottom edge
-# (row 214) can't land exactly on a strip boundary -- instead BELT_Y0 is
-# rounded UP to the next 8-row boundary at or after the card's bottom
-# (216). The visible conveyor-belt track measured off the board art runs
-# from (65,285) to (420,285) at its bottom edge; items are bottom-aligned
-# to y=285 and (being 96px tall) their top row lands at y=189 -- see the
-# KNOWN CONFLICT comment above BELT_SPRITE_Y in the Geometry section for
-# why that overlaps the card and is still unresolved.
+# The visible conveyor-belt track measured off the board art runs from
+# (65,285) to (420,285) at its bottom edge; items are bottom-aligned to
+# y=285 and (being 96px tall) their top row is fixed at y=189 all round
+# (only x ever changes) -- see the KNOWN RESIDUAL OVERLAP comment above
+# BELT_SPRITE_Y in the Geometry section: shrinking the card from 200px to
+# 175px tall closed most of the previous conflict but not quite all of it.
 #
 # ASSETS:
 #   bakery/bg_bakery_480x320.bz        LE, kind 0, strip_h=8 -- the belt
 #     board. sprite_engine composites drifting ingredients over this; the
-#     card-sized region at (100,15,280,200) should be a flat/neutral colour
+#     card-sized region at (100,15,280,175) should be a flat/neutral colour
 #     or a matching frame in this art (the recipe/baked card blits on top
 #     of it separately, at the same x=100,y=15 offset).
-#   bakery/bgm_recipe-<name>_280x200.bz   BE, kind 1 -- one per recipe (6),
+#   bakery/bgm_recipe-<name>_280x175.bz   BE, kind 1 -- one per recipe (6),
 #     shown while that recipe is active.
-#   bakery/bgm_baked-<name>_280x200.bz    BE, kind 1 -- one per recipe (6),
+#   bakery/bgm_baked-<name>_280x175.bz    BE, kind 1 -- one per recipe (6),
 #     swapped in over the same rect once the recipe is complete.
 #   bakery/bgm_result_480x320.bz       BE, kind 1 -- end-of-game screen.
 #   static/bakery/spr_<ingredient>_96x96x1.sz   LE, kind 2, magenta-keyed --
@@ -120,37 +117,37 @@ DECOYS_PER_ROUND = 1     # see MEMORY NOTE above -- 4 needed + 1 decoy = 5
 ASSET_DIR   = "/assets/static/bakery/"           # Tier A: always resident
 BOARD_PATH  = "/assets/bakery/bg_bakery_480x320.bz"        # Tier B
 RESULT_PATH = "/assets/bakery/bgm_result_480x320.bz"       # Tier B
-RECIPE_CARD_PATH = "/assets/bakery/bgm_recipe-%s_280x200.bz"
-BAKED_CARD_PATH  = "/assets/bakery/bgm_baked-%s_280x200.bz"
+RECIPE_CARD_PATH = "/assets/bakery/bgm_recipe-%s_280x175.bz"
+BAKED_CARD_PATH  = "/assets/bakery/bgm_baked-%s_280x175.bz"
 BACK_TILE_PATH   = "/assets/menu/btn_back_280x240.bz"      # shared across games
 AGAIN_TILE_PATH  = "/assets/menu/btn_again_280x240.bz"     # shared across games
 
 # ── Geometry ─────────────────────────────────────────────────────
 ICON = 96
-CARD_W, CARD_H = 280, 200
+CARD_W, CARD_H = 280, 175
 CARD_X = (config.MAIN_W - CARD_W) // 2   # 100
-CARD_Y = 15
-BELT_Y0 = 216                             # next 8-row strip boundary at/after
-                                           # CARD_Y + CARD_H (215) -- see LAYOUT above
-BELT_H  = config.MAIN_H - BELT_Y0         # 104
+CARD_Y = 15                               # card occupies rows 15-189
 
 # Belt track corners as measured off the board art: bottom-left (65,285),
 # bottom-right (420,285). Items are bottom-aligned to y=285 and their
 # left edge ranges over [BELT_X_LEFT, BELT_X_RIGHT - ICON] so the full
 # 96x96 bbox never pokes outside the drawn track horizontally.
 #
-# KNOWN CONFLICT, unresolved: bottom-aligning a 96px icon to y=285 puts
-# its top row at y=189 -- 26 rows above BELT_Y0 (216), i.e. inside the
-# card's own footprint (card runs rows 15-214). render_dirty() always
-# repaints a dirty strip from raw board pixels across the FULL screen
-# width, with no knowledge of the card blitted on top of it -- so every
-# tick a belt item moves, the strips covering rows 189-214 get reset to
-# plain board art and the bottom slice of the recipe card is erased
-# until the next full-board repaint. This wasn't hit before because the
-# belt sat entirely below row 216; it's real now and needs a decision
-# (shrink the belt icon's effective height, move the card up, or give
-# the card its own dirty-tracked compositing) before this ships -- see
-# the module docstring's LAYOUT section for the invariant this breaks.
+# KNOWN RESIDUAL OVERLAP, unresolved: bottom-aligning a 96px icon to
+# y=285 puts its top row at y=189, and that row's position is FIXED all
+# round (only x ever moves, so sprite_engine always dirties the same
+# vertical strip range: 189 // STRIP_H = strip 23, rows 184-191). The
+# card's last row (189, since CARD_Y + CARD_H - 1 = 15+175-1) falls
+# inside that same strip, so rows 184-189 (6 of that strip's 8 rows) sit
+# in both the card and the belt's dirty range. render_dirty() repaints a
+# dirty strip from raw board pixels across the FULL screen width with no
+# idea the card is blitted on top of it -- so as soon as the belt starts
+# moving, that 6px-tall band along the card's bottom edge gets reset to
+# plain board art and stays that way for the rest of the round (it's not
+# a flicker -- every subsequent repaint targets the same board pixels).
+# Dropping CARD_H to <=169 (card's last row <=183, clear of strip 23
+# entirely) would close this completely; 175 shrank the previous 26-row
+# conflict down to this single 6-row sliver but didn't eliminate it.
 BELT_X_LEFT  = 65
 BELT_X_RIGHT = 420
 BELT_SPRITE_Y = 285 - ICON                # 189, bottom-aligned to y=285
