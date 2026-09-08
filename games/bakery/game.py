@@ -204,8 +204,10 @@ HIT_PAD = 20
 BTN_ICON_X = (config.BTN_W - ICON) // 2
 BTN_ICON_Y = (config.BTN_H - ICON) // 2
 
-LEGEND_BG      = WHITE                    # correct (locked) slot tile
-WRONG_BG       = rgb(70, 20, 20)          # wrong (removable) slot tile
+LEGEND_BG      = WHITE                    # every parked-item slot tile --
+                                           # correct or wrong, same white
+                                           # background; only the border
+                                           # colour tells them apart
 LOCKED_BORDER  = rgb(60, 200, 90)         # green -- can't be cleared
 REMOVABLE_BORDER = rgb(230, 150, 40)      # orange -- press to clear
 HEADER_COLOR   = rgb(120, 60, 20)         # warm bakery brown
@@ -662,9 +664,8 @@ class MagicBakeryGame(BaseGame):
 
     async def _place_slot(self, idx, name, correct):
         self._slots[idx] = {"name": name, "correct": correct}
-        bg = LEGEND_BG if correct else WRONG_BG
         border = LOCKED_BORDER if correct else REMOVABLE_BORDER
-        await self.display.fill_btn(idx, bg)
+        await self.display.fill_btn(idx, LEGEND_BG)
         self._scratch_arena.reset()
         try:
             sheet = flash_assets.SpriteSheet(_btn_asset_path(name),
@@ -687,7 +688,19 @@ class MagicBakeryGame(BaseGame):
     async def _on_button_press(self, idx):
         slot = self._slots[idx]
         if slot is not None and not slot["correct"]:
-            await self._paint_slot_empty(idx)
+            # Same SPI0 race as the audio fix in _handle_tap(), different
+            # trigger: the button screens and the main screen share ONE
+            # physical SPI bus (drivers/spi_bus.py has a single self.spi),
+            # just different CS lines. SpriteEngine.start() keeps ticking
+            # -- and writing to that bus for the main screen -- on its own
+            # asyncio task the whole round, so a button-screen fill here
+            # can land mid-transfer of a belt repaint and tear either (or
+            # both) screens. Same fix: pause the engine around the draw.
+            await self._engine.stop()
+            try:
+                await self._paint_slot_empty(idx)
+            finally:
+                self._engine.start(tick_ms=BELT_TICK_MS)
 
     def _update_progress_leds(self, collected_n, needed_n):
         if not (self.leds and self.leds.ready):
