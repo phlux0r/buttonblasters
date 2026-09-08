@@ -575,7 +575,7 @@ class MagicBakeryGame(BaseGame):
     def _update_progress_leds(self, collected_n, needed_n):
         if not (self.leds and self.leds.ready):
             return
-        n = self.leds.num_leds()
+        n = self.leds.num_leds
         lit = round(n * collected_n / needed_n)
         for i in range(n):
             if i < lit:
