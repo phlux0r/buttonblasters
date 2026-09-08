@@ -285,11 +285,20 @@ class ST7789:
     async def fill(self, color565: int, x=0, y=0, w=None, h=None):
         w = w or self.w; h = h or self.h
         hi = color565 >> 8; lo = color565 & 0xFF
+        px = bytes([hi, lo])
         total = w * h
         # Large chunk (1024 px = 2048 B RGB565) — far fewer loop iterations
         # than the old 64-px chunk. Yield per chunk for audio/button time.
+        #
+        # Build the 2-byte pixel pattern first and multiply the bytes
+        # object (like ILI9488.fill() above already does) -- NOT
+        # bytes([hi, lo] * CHUNK_PX), which builds a 2048-ELEMENT PYTHON
+        # LIST before bytes() ever runs. On this 32-bit target that list's
+        # own pointer array costs ~8192 bytes just to get thrown away once
+        # bytes() copies it -- confirmed on hardware as the exact
+        # allocation size in a real "allocating 8192 bytes" load() crash.
         CHUNK_PX = 1024
-        chunk = bytes([hi, lo] * CHUNK_PX)
+        chunk = px * CHUNK_PX
         async with spi_bus.device(self._cs, freq=config.SPI_FREQ_DISPLAY):
             self._set_window(x, y, x+w-1, y+h-1)
             remaining = total
@@ -298,7 +307,7 @@ class ST7789:
                 remaining -= CHUNK_PX
                 await asyncio.sleep_ms(0)
             if remaining:
-                spi_bus.write(bytes([hi, lo] * remaining))
+                spi_bus.write(px * remaining)
 
     async def fill_rgb(self, r: int, g: int, b: int,
                        x=0, y=0, w=None, h=None):
