@@ -141,6 +141,21 @@ def install(port, push_sd):
         # Requires /sd mounted on the device (the firmware mounts it at
         # boot when the card is present). If this fails, copy build/sd/*
         # onto the card with a desktop card reader instead.
+        #
+        # `cp -r` is purely ADDITIVE -- it never deletes anything already
+        # on the card, so a renamed/resized asset (a recipe card that went
+        # through three different filenames across one afternoon of
+        # iteration, say) leaves every OLD name behind forever, silently
+        # eating space until "No space left on device" shows up on some
+        # unrelated later file. Delete each per-game folder on the card
+        # first so every push starts from a clean slate -- a proper
+        # mirror, not an overlay. Best-effort (check=False): a folder that
+        # doesn't exist yet on a first-ever deploy is fine to skip.
+        for game_dir in sorted((STAGE_SD / "assets").iterdir()):
+            if game_dir.is_dir():
+                subprocess.run(["mpremote", "connect", port, "rm", "-r",
+                               ":/sd/assets/" + game_dir.name],
+                               capture_output=True)
         mpremote(port, "cp", "-r", str(STAGE_SD / "assets"), ":/sd/")
 
 
