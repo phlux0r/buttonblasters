@@ -16,10 +16,19 @@
 # as an unreasoned-through hazard: audio that resolves via the SD-card
 # fallback shares SPI0 with the display, and a fire-and-forget audio call
 # racing the engine's background render tick caused real screen tearing in
-# Bonk (fixed there by awaiting the clip instead). Every audio call in this
-# file is awaited (wait=True) for the same reason, and every per-game clip
-# (voice names + recipe intros) should be baked/installed as Tier B audio
-# for this game (not left to the SD fallback) so the fast path is used.
+# Bonk (fixed there by awaiting the clip instead). This file originally
+# assumed the same fix (every audio call awaited with wait=True) would be
+# enough here too -- it isn't, and hardware confirmed it: Bonk never runs
+# a CONTINUOUS background tick concurrently with anything, so awaiting a
+# clip in Bonk's own coroutine really did mean nothing else was touching
+# SPI0 at the same time. Bakery's belt tick runs on its OWN asyncio task
+# via engine.start(), the whole round -- awaiting a clip in _handle_tap()
+# only pauses THAT coroutine, not the separate task still ticking (and
+# drawing) concurrently. The actual fix is in _handle_tap(): explicitly
+# await self._engine.stop() before any audio in there, engine.start()
+# again after. Every per-game clip (voice names + recipe intros) should
+# still be baked/installed as Tier B audio for this game (not left to the
+# SD fallback) so the fast path is used regardless.
 #
 # MEMORY NOTE — the ingredient pool is 10 items, but flash_assets.arena is
 # a shared 96KB bump arena and each 96x96 LE sprite is ~18.4KB — all 10 of
@@ -159,21 +168,35 @@ CARD_Y = 15                               # card occupies rows 15-183
 BELT_X_LEFT  = 65
 BELT_X_RIGHT = 420
 BELT_SPRITE_Y = 285 - ICON                # 189, bottom-aligned to y=285
-BELT_SLOTS = 3         # max concurrent drifting ingredients (2-3 by design)
 
-# Overlap-proof positioning: instead of resetting an exiting item to a
-# fixed x (which can land it on top of an item that hasn't moved far from
-# ITS spawn yet), each item's x wraps by exactly LOOP_LEN once it's fully
-# off the left edge -- WRAP_X is where an item becomes fully invisible
-# (its right edge is at BELT_X_LEFT), and LOOP_LEN is the distance from
-# there back to BELT_X_RIGHT. Since every item moves at the same speed
-# and only ever advances by the same fixed LOOP_LEN on wrap, relative
-# spacing between items is an invariant -- like points on a circular
+# Overlap-proof positioning: an item's LEFT EDGE is kept strictly within
+# [TRACK_MIN, TRACK_MAX] at all times -- TRACK_MAX = BELT_X_RIGHT - ICON,
+# so the item's own bbox (left edge .. left edge+ICON) never pokes outside
+# [BELT_X_LEFT, BELT_X_RIGHT], matching the corners measured off the board
+# art exactly. When an item's left edge would drop below TRACK_MIN, it's
+# corrected (x += TRACK_SPAN) in the SAME tick, before that position is
+# ever handed to the renderer -- a one-frame "pop" back to the right side
+# rather than a smooth off-screen exit, but it's the only way to guarantee
+# the item is NEVER drawn outside the belt art's own bounds (a wider,
+# invisible-transit-zone version of this wrapped through screen space well
+# past both corners, which is exactly what "moving across the full width"
+# turned out to be).
+#
+# Since every item advances by the same fixed TRACK_SPAN whenever it
+# wraps, and all move at the same speed, their relative spacing (mod
+# TRACK_SPAN) is an invariant -- like evenly-spaced points on a circular
 # track -- so items spaced apart initially can never catch up to and
-# overlap each other, ever, no matter how many laps they make.
-WRAP_X = BELT_X_LEFT - ICON
-LOOP_LEN = BELT_X_RIGHT - WRAP_X
-DRIFT_PX_PER_TICK = 5
+# overlap each other, ever, no matter how many wraps they make. BUT that
+# only holds if there's room for them: 96px icons need TRACK_SPAN >=
+# BELT_SLOTS * ICON, and TRACK_SPAN here is only 259px -- enough for 2
+# (192px, 67px of slack) but NOT 3 (288px, impossible without overlap or
+# spilling outside the corners). So BELT_SLOTS is 2, not 3 -- the top end
+# of "2 or 3" doesn't fit this track at full icon size.
+BELT_SLOTS = 2
+TRACK_MIN  = BELT_X_LEFT
+TRACK_MAX  = BELT_X_RIGHT - ICON
+TRACK_SPAN = TRACK_MAX - TRACK_MIN
+DRIFT_PX_PER_TICK = 2
 BELT_TICK_MS = 90
 LOOP_TICK_MS = 40      # input-poll granularity; independent of the belt tick
 HIT_PAD = 20
@@ -441,8 +464,9 @@ class MagicBakeryGame(BaseGame):
                     # restocking once per lap instead of staying hidden
                     # forever once every name is briefly taken.
                     entry["sprite"].move_by(-DRIFT_PX_PER_TICK, 0)
-                    if entry["sprite"].x < WRAP_X:
-                        entry["sprite"].x += LOOP_LEN
+                    if entry["sprite"].x < TRACK_MIN:
+                        entry["sprite"].x += TRACK_SPAN
+                        entry["sprite"]._dirty = True
                         self._restock_belt_entry(entry, live_pool or pool,
                                                  sheets, collected, belt)
 
@@ -500,6 +524,19 @@ class MagicBakeryGame(BaseGame):
     # ── Belt sprites ─────────────────────────────────────────────
 
     def _spawn_belt(self, pool, sheets):
+        # Clear the PREVIOUS round's belt sprites out of the engine first.
+        # Nothing else ever calls engine.add() for a main-screen sprite in
+        # this game, so the engine's whole sprite list is ours to reset --
+        # skipping this meant every round left its 2-3 sprites behind
+        # (never removed), each still pointing at a SpriteSheet backed by
+        # the shared arena that flash_assets.arena.reset() (called earlier
+        # in _play_round, before this) had already reclaimed for THIS
+        # round's sheets -- corrupted garbage sprites at stale positions,
+        # on top of piling up until the 3rd round's engine.add() call hit
+        # "max 8 sprites per scene" and crashed the whole game.
+        for s in list(self._engine.sprites):
+            self._engine.remove(s)
+
         # One Sprite object per slot, seeded here and never recreated --
         # _restock_belt_entry() only ever repoints an existing sprite's
         # sheet, so mid-round restocking can't run into MAX_ACTIVE or need
@@ -512,10 +549,10 @@ class MagicBakeryGame(BaseGame):
                 break
         belt = []
         for i in range(BELT_SLOTS):
-            # Evenly spaced across one full LOOP_LEN lap so the no-overlap
-            # invariant (see WRAP_X/LOOP_LEN comment in Geometry) holds
-            # from the very first tick, not just after the first wrap.
-            x = BELT_X_RIGHT - ICON - (i * LOOP_LEN) // BELT_SLOTS
+            # Evenly spaced across the track so the no-overlap invariant
+            # (see the TRACK_MIN/TRACK_MAX/TRACK_SPAN comment in Geometry)
+            # holds from the very first tick, not just after the first wrap.
+            x = TRACK_MAX - (i * TRACK_SPAN) // BELT_SLOTS
             sprite = self._engine.add(any_sheet, x, BELT_SPRITE_Y) if any_sheet else None
             belt.append({"sprite": sprite, "name": None, "active": False})
         for entry in belt:
@@ -578,24 +615,39 @@ class MagicBakeryGame(BaseGame):
         is_correct = name in needed and name not in collected
         slot_idx = self._first_empty_slot()
 
-        if slot_idx is None:
-            await self.show_wrong()
-            return False
+        # Pause the belt's continuous background tick for every audio cue
+        # below (including show_wrong()'s). SpriteEngine.start() keeps
+        # ticking -- and touching SPI0 to redraw the main screen -- on its
+        # OWN asyncio task the whole time; awaiting a clip in THIS
+        # coroutine (as the module docstring originally assumed, following
+        # Bonk's fix for a similar issue) does nothing to stop that OTHER
+        # task's concurrent SPI0 use. Bonk never has this problem because
+        # it never runs a continuous background tick concurrently with
+        # anything; Bakery is the first game that does. Confirmed on
+        # hardware as tearing across every screen, button screens
+        # included, on every correct/wrong cue.
+        await self._engine.stop()
+        try:
+            if slot_idx is None:
+                await self.show_wrong()
+                return False
 
-        await self._place_slot(slot_idx, name, correct=is_correct)
-        if self.audio and self.audio.ready:
-            await self.audio.play_voice(_voice_file(name), wait=True)
+            await self._place_slot(slot_idx, name, correct=is_correct)
+            if self.audio and self.audio.ready:
+                await self.audio.play_voice(_voice_file(name), wait=True)
 
-        if is_correct:
-            collected.add(name)
-            if self.leds and self.leds.ready:
-                self.leds.start_effect(self.leds.correct_flash())
-            if self.audio and self.audio.ready:
-                await self.audio.play_sfx("correct.wav", wait=True)
-            self._update_progress_leds(len(collected), len(needed))
-        else:
-            if self.audio and self.audio.ready:
-                await self.audio.play_sfx("wrong.wav", wait=True)
+            if is_correct:
+                collected.add(name)
+                if self.leds and self.leds.ready:
+                    self.leds.start_effect(self.leds.correct_flash())
+                if self.audio and self.audio.ready:
+                    await self.audio.play_sfx("correct.wav", wait=True)
+                self._update_progress_leds(len(collected), len(needed))
+            else:
+                if self.audio and self.audio.ready:
+                    await self.audio.play_sfx("wrong.wav", wait=True)
+        finally:
+            self._engine.start(tick_ms=BELT_TICK_MS)
 
         # collected is already updated above, so a just-completed
         # ingredient is immediately excluded from whatever replaces it.
