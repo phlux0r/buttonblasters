@@ -159,7 +159,20 @@ CARD_Y = 15                               # card occupies rows 15-183
 BELT_X_LEFT  = 65
 BELT_X_RIGHT = 420
 BELT_SPRITE_Y = 285 - ICON                # 189, bottom-aligned to y=285
-BELT_SLOTS = 4        # concurrent drifting ingredients
+BELT_SLOTS = 3         # max concurrent drifting ingredients (2-3 by design)
+
+# Overlap-proof positioning: instead of resetting an exiting item to a
+# fixed x (which can land it on top of an item that hasn't moved far from
+# ITS spawn yet), each item's x wraps by exactly LOOP_LEN once it's fully
+# off the left edge -- WRAP_X is where an item becomes fully invisible
+# (its right edge is at BELT_X_LEFT), and LOOP_LEN is the distance from
+# there back to BELT_X_RIGHT. Since every item moves at the same speed
+# and only ever advances by the same fixed LOOP_LEN on wrap, relative
+# spacing between items is an invariant -- like points on a circular
+# track -- so items spaced apart initially can never catch up to and
+# overlap each other, ever, no matter how many laps they make.
+WRAP_X = BELT_X_LEFT - ICON
+LOOP_LEN = BELT_X_RIGHT - WRAP_X
 DRIFT_PX_PER_TICK = 5
 BELT_TICK_MS = 90
 LOOP_TICK_MS = 40      # input-poll granularity; independent of the belt tick
@@ -397,15 +410,41 @@ class MagicBakeryGame(BaseGame):
 
         try:
             while len(collected) < len(needed) and self._running:
-                if await self.check_back():
-                    self._running = False
-                    quit_requested = True
-                    break
+                # ONE queue read per tick, not two -- check_back() also
+                # does its own get_nowait() internally, and calling it
+                # separately from our own button-press poll below meant
+                # whichever ran first silently ate the other's event (the
+                # queue only ever holds one item at a time in practice).
+                # That's exactly why the button-screen "clear a wrong
+                # item" press never seemed to register: check_back() was
+                # swallowing it before this loop's own poll ever saw it.
+                # Every other game in this codebase merges the two reads
+                # into one for the same reason (see e.g. games/bonk/game.py
+                # _wait_before_spawn's single get_nowait()).
+                try:
+                    btn, evt = self.buttons._queue.get_nowait()
+                    if evt == "press" and btn == 4:
+                        self._running = False
+                        quit_requested = True
+                        self.quit()
+                        break
+                    if evt == "press" and btn in (0, 1, 2, 3):
+                        await self._on_button_press(btn)
+                except Exception:
+                    pass
 
                 for entry in belt:
+                    if entry["sprite"] is None:
+                        continue
+                    # Keep drifting/wrapping even while hidden (active=
+                    # False) -- that's what makes a hidden slot retry
+                    # restocking once per lap instead of staying hidden
+                    # forever once every name is briefly taken.
                     entry["sprite"].move_by(-DRIFT_PX_PER_TICK, 0)
-                    if entry["sprite"].x < BELT_X_LEFT:
-                        self._respawn_belt_entry(entry, live_pool or pool, sheets)
+                    if entry["sprite"].x < WRAP_X:
+                        entry["sprite"].x += LOOP_LEN
+                        self._restock_belt_entry(entry, live_pool or pool,
+                                                 sheets, collected, belt)
 
                 touch_down = self.buttons.touch_down
                 if touch_down and not touch_was_down:
@@ -417,13 +456,6 @@ class MagicBakeryGame(BaseGame):
                         if done:
                             break
                 touch_was_down = touch_down
-
-                try:
-                    btn, evt = self.buttons._queue.get_nowait()
-                    if evt == "press" and btn in (0, 1, 2, 3):
-                        await self._on_button_press(btn)
-                except Exception:
-                    pass
 
                 await asyncio.sleep_ms(LOOP_TICK_MS)
         finally:
@@ -468,37 +500,68 @@ class MagicBakeryGame(BaseGame):
     # ── Belt sprites ─────────────────────────────────────────────
 
     def _spawn_belt(self, pool, sheets):
-        # Evenly space initial left-edges across [BELT_X_LEFT, BELT_X_RIGHT
-        # - ICON] so every slot starts fully inside the visible track
-        # instead of staggered off-screen (there's no off-screen anymore --
-        # the whole belt lives within x=65..420).
-        span = (BELT_X_RIGHT - ICON) - BELT_X_LEFT
+        # One Sprite object per slot, seeded here and never recreated --
+        # _restock_belt_entry() only ever repoints an existing sprite's
+        # sheet, so mid-round restocking can't run into MAX_ACTIVE or need
+        # a second engine.add(). Any loadable sheet does as the initial
+        # placeholder; restock immediately below picks the real content.
+        any_sheet = None
+        for n in pool:
+            if sheets.get(n) is not None:
+                any_sheet = sheets[n]
+                break
         belt = []
         for i in range(BELT_SLOTS):
-            name = random.choice(pool)
-            sheet = sheets.get(name)
-            x = (BELT_X_RIGHT - ICON) - (i * span) // max(1, BELT_SLOTS - 1)
-            if sheet is not None:
-                sprite = self._engine.add(sheet, x, BELT_SPRITE_Y)
-            else:
-                sprite = None
-            belt.append({"sprite": sprite, "name": name, "x": x})
+            # Evenly spaced across one full LOOP_LEN lap so the no-overlap
+            # invariant (see WRAP_X/LOOP_LEN comment in Geometry) holds
+            # from the very first tick, not just after the first wrap.
+            x = BELT_X_RIGHT - ICON - (i * LOOP_LEN) // BELT_SLOTS
+            sprite = self._engine.add(any_sheet, x, BELT_SPRITE_Y) if any_sheet else None
+            belt.append({"sprite": sprite, "name": None, "active": False})
+        for entry in belt:
+            self._restock_belt_entry(entry, pool, sheets, set(), belt)
         return belt
 
-    def _respawn_belt_entry(self, entry, pool, sheets):
-        name = random.choice(pool)
-        sheet = sheets.get(name)
+    def _pick_belt_name(self, pool, collected, belt, exclude_entry=None):
+        """A name that's neither already collected (req #4: a correctly-
+        picked ingredient never reappears) nor currently showing on any
+        OTHER active belt slot (req #2: no simultaneous duplicates).
+        None if nothing in the pool satisfies both right now."""
+        active_names = {e["name"] for e in belt
+                        if e is not exclude_entry and e["active"]}
+        candidates = [n for n in pool
+                      if n not in collected and n not in active_names]
+        if not candidates:
+            return None
+        return random.choice(candidates)
+
+    def _restock_belt_entry(self, entry, pool, sheets, collected, belt):
+        """Assign a fresh unique, not-yet-collected ingredient to this
+        slot, or hide it (active=False) if none is available right now --
+        e.g. every remaining name is already active elsewhere on the
+        belt. A hidden slot keeps drifting/wrapping and retries on every
+        lap, so it comes back as soon as a name frees up."""
+        name = self._pick_belt_name(pool, collected, belt, exclude_entry=entry)
+        sheet = sheets.get(name) if name else None
+        if entry["sprite"] is None or sheet is None:
+            entry["active"] = False
+            entry["name"] = None
+            if entry["sprite"] is not None:
+                entry["sprite"].show(False)
+            return
         entry["name"] = name
-        if entry["sprite"] is not None and sheet is not None:
-            entry["sprite"].sheet = sheet
-            entry["sprite"].w = sheet.w
-            entry["sprite"].h = sheet.h
-            entry["sprite"].frame = 0
-            entry["sprite"].x = BELT_X_RIGHT - ICON
-            entry["sprite"]._dirty = True
+        entry["active"] = True
+        entry["sprite"].sheet = sheet
+        entry["sprite"].w = sheet.w
+        entry["sprite"].h = sheet.h
+        entry["sprite"].frame = 0
+        entry["sprite"].show(True)
+        entry["sprite"]._dirty = True
 
     def _find_belt_hit(self, belt, tx, ty):
         for entry in belt:
+            if not entry["active"]:
+                continue
             s = entry["sprite"]
             if s is None:
                 continue
@@ -534,7 +597,9 @@ class MagicBakeryGame(BaseGame):
             if self.audio and self.audio.ready:
                 await self.audio.play_sfx("wrong.wav", wait=True)
 
-        self._respawn_belt_entry(entry, pool, sheets)
+        # collected is already updated above, so a just-completed
+        # ingredient is immediately excluded from whatever replaces it.
+        self._restock_belt_entry(entry, pool, sheets, collected, belt)
         return len(collected) == len(needed)
 
     def _first_empty_slot(self):
