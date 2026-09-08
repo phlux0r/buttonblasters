@@ -196,9 +196,21 @@ BELT_SLOTS = 2
 TRACK_MIN  = BELT_X_LEFT
 TRACK_MAX  = BELT_X_RIGHT - ICON
 TRACK_SPAN = TRACK_MAX - TRACK_MIN
-DRIFT_PX_PER_TICK = 2
+DRIFT_PX_PER_TICK = 1
 BELT_TICK_MS = 90
-LOOP_TICK_MS = 40      # input-poll granularity; independent of the belt tick
+# Deliberately equal to BELT_TICK_MS, not independent of it -- movement
+# happens in THIS loop (LOOP_TICK_MS-paced) but the actual screen redraw
+# happens on SpriteEngine.start()'s own, separately-scheduled task
+# (BELT_TICK_MS-paced). Two independent timers at DIFFERENT periods drift
+# in and out of phase with each other, so the number of movement steps
+# that pile up before the next redraw varies frame to frame (2 sometimes,
+# 3 others) -- that's what actually read as choppy/uneven motion, not the
+# base frame rate. Equal periods means a fixed, constant relative phase
+# instead: exactly one movement step lands between each redraw, every
+# time. Costs nothing extra in CPU/SPI bandwidth, just fixes the pairing.
+# Also raises input-poll latency here from 40ms to 90ms, imperceptible at
+# this game's pace and for this age range.
+LOOP_TICK_MS = BELT_TICK_MS
 HIT_PAD = 20
 
 BTN_ICON_X = (config.BTN_W - ICON) // 2
