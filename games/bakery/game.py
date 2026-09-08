@@ -39,24 +39,30 @@
 # the round's persistent LE belt sprites.
 #
 # LAYOUT — main screen is 480x320. The recipe/baked card (280x200) sits at
-# the top (x=100, y=0). The belt/drift lane occupies y=200-320 (120px,
-# ingredient sprites vertically centered at y=212). This split is
-# deliberate at the sprite_engine dirty-tracking granularity (STRIP_H=8 in
+# (x=100, y=15), matching the pre-composed frame baked into the board art.
+# The belt/drift lane occupies y=216-320 (104px, ingredient sprites
+# vertically centered at y=220). This split is deliberate at the
+# sprite_engine dirty-tracking granularity (STRIP_H=8 in
 # drivers/strip_renderer.py, NOT the unrelated 32-row chunking
 # tools/bake_assets.py uses when BAKING a file): the card is painted via
 # plain paint_main_bg(), entirely outside sprite_engine's tracking, so if
 # a drifting sprite's dirty strip ever overlapped the card's rows, the
 # engine would repaint straight from the board art and erase the card.
-# y=200 and y=320 are both exact 8-row strip boundaries and the card
-# (ending at row 199, strip 24) and the belt sprites (starting at row 212,
-# strip 26) leave a clean untouched strip between them (200-207) — no
-# overlap possible.
+# Since CARD_Y=15 isn't itself strip-aligned, the card's own bottom edge
+# (row 214) can't land exactly on a strip boundary -- instead BELT_Y0 is
+# rounded UP to the next 8-row boundary at or after the card's bottom
+# (216), so the belt lane (and every strip sprite_engine ever marks dirty,
+# rows 216-319) starts strictly below the card. The one strip spanning
+# rows 208-215 straddles the card's last row (214) and one row of plain
+# board art (215) but is never touched by render_dirty() since no sprite
+# ever occupies it -- no overlap possible.
 #
 # ASSETS:
 #   bakery/bg_bakery_480x320.bz        LE, kind 0, strip_h=8 -- the belt
 #     board. sprite_engine composites drifting ingredients over this; the
-#     card-sized region at (100,0,280,200) should be a flat/neutral colour
-#     in this art (the recipe/baked card blits on top of it separately).
+#     card-sized region at (100,15,280,200) should be a flat/neutral colour
+#     or a matching frame in this art (the recipe/baked card blits on top
+#     of it separately, at the same x=100,y=15 offset).
 #   bakery/bgm_recipe-<name>_280x200.bz   BE, kind 1 -- one per recipe (6),
 #     shown while that recipe is active.
 #   bakery/bgm_baked-<name>_280x200.bz    BE, kind 1 -- one per recipe (6),
@@ -123,10 +129,11 @@ AGAIN_TILE_PATH  = "/assets/menu/btn_again_280x240.bz"     # shared across games
 ICON = 96
 CARD_W, CARD_H = 280, 200
 CARD_X = (config.MAIN_W - CARD_W) // 2   # 100
-CARD_Y = 0
-BELT_Y0 = CARD_H                          # 200 -- exact 8-row strip boundary
-BELT_H  = config.MAIN_H - BELT_Y0         # 120
-BELT_SPRITE_Y = BELT_Y0 + (BELT_H - ICON) // 2   # 212, vertically centered
+CARD_Y = 15
+BELT_Y0 = 216                             # next 8-row strip boundary at/after
+                                           # CARD_Y + CARD_H (215) -- see LAYOUT above
+BELT_H  = config.MAIN_H - BELT_Y0         # 104
+BELT_SPRITE_Y = BELT_Y0 + (BELT_H - ICON) // 2   # 220, vertically centered
 BELT_SLOTS = 4        # concurrent drifting ingredients
 DRIFT_PX_PER_TICK = 5
 BELT_TICK_MS = 90
