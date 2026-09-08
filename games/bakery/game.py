@@ -51,11 +51,11 @@
 # Since CARD_Y=15 isn't itself strip-aligned, the card's own bottom edge
 # (row 214) can't land exactly on a strip boundary -- instead BELT_Y0 is
 # rounded UP to the next 8-row boundary at or after the card's bottom
-# (216), so the belt lane (and every strip sprite_engine ever marks dirty,
-# rows 216-319) starts strictly below the card. The one strip spanning
-# rows 208-215 straddles the card's last row (214) and one row of plain
-# board art (215) but is never touched by render_dirty() since no sprite
-# ever occupies it -- no overlap possible.
+# (216). The visible conveyor-belt track measured off the board art runs
+# from (65,285) to (420,285) at its bottom edge; items are bottom-aligned
+# to y=285 and (being 96px tall) their top row lands at y=189 -- see the
+# KNOWN CONFLICT comment above BELT_SPRITE_Y in the Geometry section for
+# why that overlaps the card and is still unresolved.
 #
 # ASSETS:
 #   bakery/bg_bakery_480x320.bz        LE, kind 0, strip_h=8 -- the belt
@@ -133,7 +133,27 @@ CARD_Y = 15
 BELT_Y0 = 216                             # next 8-row strip boundary at/after
                                            # CARD_Y + CARD_H (215) -- see LAYOUT above
 BELT_H  = config.MAIN_H - BELT_Y0         # 104
-BELT_SPRITE_Y = BELT_Y0 + (BELT_H - ICON) // 2   # 220, vertically centered
+
+# Belt track corners as measured off the board art: bottom-left (65,285),
+# bottom-right (420,285). Items are bottom-aligned to y=285 and their
+# left edge ranges over [BELT_X_LEFT, BELT_X_RIGHT - ICON] so the full
+# 96x96 bbox never pokes outside the drawn track horizontally.
+#
+# KNOWN CONFLICT, unresolved: bottom-aligning a 96px icon to y=285 puts
+# its top row at y=189 -- 26 rows above BELT_Y0 (216), i.e. inside the
+# card's own footprint (card runs rows 15-214). render_dirty() always
+# repaints a dirty strip from raw board pixels across the FULL screen
+# width, with no knowledge of the card blitted on top of it -- so every
+# tick a belt item moves, the strips covering rows 189-214 get reset to
+# plain board art and the bottom slice of the recipe card is erased
+# until the next full-board repaint. This wasn't hit before because the
+# belt sat entirely below row 216; it's real now and needs a decision
+# (shrink the belt icon's effective height, move the card up, or give
+# the card its own dirty-tracked compositing) before this ships -- see
+# the module docstring's LAYOUT section for the invariant this breaks.
+BELT_X_LEFT  = 65
+BELT_X_RIGHT = 420
+BELT_SPRITE_Y = 285 - ICON                # 189, bottom-aligned to y=285
 BELT_SLOTS = 4        # concurrent drifting ingredients
 DRIFT_PX_PER_TICK = 5
 BELT_TICK_MS = 90
@@ -335,6 +355,15 @@ class MagicBakeryGame(BaseGame):
         for i in range(4):
             await self._paint_slot_empty(i)
 
+        # Full clean board paint FIRST -- render_dirty() always repaints a
+        # dirty strip from raw board pixels across the whole screen width,
+        # with no idea anything's blitted on top of it. Doing this before
+        # the card paint (not after, as this used to) means the card is
+        # the last thing drawn and survives; doing it after would erase
+        # the card immediately, since mark_all() dirties every strip.
+        self._engine.mark_all()
+        await self._engine.render_dirty()
+
         if not await self.display.paint_main_bg(
                 RECIPE_CARD_PATH % recipe, arena=self._scratch_arena,
                 x=CARD_X, y=CARD_Y):
@@ -343,9 +372,6 @@ class MagicBakeryGame(BaseGame):
         if self.audio and self.audio.ready:
             await self.audio.play_voice("bake_%s.wav" % recipe, wait=True)
         await asyncio.sleep_ms(400)
-
-        self._engine.mark_all()
-        await self._engine.render_dirty()
 
         belt = self._spawn_belt(live_pool or pool, sheets)
         self._engine.start(tick_ms=BELT_TICK_MS)
@@ -364,7 +390,7 @@ class MagicBakeryGame(BaseGame):
 
                 for entry in belt:
                     entry["sprite"].move_by(-DRIFT_PX_PER_TICK, 0)
-                    if entry["sprite"].x + ICON < 0:
+                    if entry["sprite"].x < BELT_X_LEFT:
                         self._respawn_belt_entry(entry, live_pool or pool, sheets)
 
                 touch_down = self.buttons.touch_down
@@ -424,11 +450,16 @@ class MagicBakeryGame(BaseGame):
     # ── Belt sprites ─────────────────────────────────────────────
 
     def _spawn_belt(self, pool, sheets):
+        # Evenly space initial left-edges across [BELT_X_LEFT, BELT_X_RIGHT
+        # - ICON] so every slot starts fully inside the visible track
+        # instead of staggered off-screen (there's no off-screen anymore --
+        # the whole belt lives within x=65..420).
+        span = (BELT_X_RIGHT - ICON) - BELT_X_LEFT
         belt = []
         for i in range(BELT_SLOTS):
             name = random.choice(pool)
             sheet = sheets.get(name)
-            x = config.MAIN_W + i * 150
+            x = (BELT_X_RIGHT - ICON) - (i * span) // max(1, BELT_SLOTS - 1)
             if sheet is not None:
                 sprite = self._engine.add(sheet, x, BELT_SPRITE_Y)
             else:
@@ -445,7 +476,7 @@ class MagicBakeryGame(BaseGame):
             entry["sprite"].w = sheet.w
             entry["sprite"].h = sheet.h
             entry["sprite"].frame = 0
-            entry["sprite"].x = config.MAIN_W
+            entry["sprite"].x = BELT_X_RIGHT - ICON
             entry["sprite"]._dirty = True
 
     def _find_belt_hit(self, belt, tx, ty):
