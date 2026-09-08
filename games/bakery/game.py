@@ -38,9 +38,9 @@
 # card + end-screen paints, kept separate from the shared arena that holds
 # the round's persistent LE belt sprites.
 #
-# LAYOUT — main screen is 480x320. The recipe card (280x175) sits at
+# LAYOUT — main screen is 480x320. The recipe card (280x169) sits at
 # (x=100, y=15), matching the pre-composed frame baked into the board art;
-# its bottom edge is row 189 (15+175-1). This position matters at the
+# its bottom edge is row 183 (15+169-1). This position matters at the
 # sprite_engine dirty-tracking granularity (STRIP_H=8 in
 # drivers/strip_renderer.py, NOT the unrelated 32-row chunking
 # tools/bake_assets.py uses when BAKING a file): the card is painted via
@@ -50,9 +50,10 @@
 # The visible conveyor-belt track measured off the board art runs from
 # (65,285) to (420,285) at its bottom edge; items are bottom-aligned to
 # y=285 and (being 96px tall) their top row is fixed at y=189 all round
-# (only x ever changes) -- see the KNOWN RESIDUAL OVERLAP comment above
-# BELT_SPRITE_Y in the Geometry section: shrinking the card from 200px to
-# 175px tall closed most of the previous conflict but not quite all of it.
+# (only x ever changes) -- 189 // STRIP_H = strip 23, rows 184-191. 169px
+# is the exact height that clears this: the card's last row (183) sits
+# one row below strip 23, so the two never share a strip and the overlap
+# that 175px (and 200px before it) left behind is fully closed.
 #
 # The baked reveal at the end of a round is a separate, full-screen
 # (480x320) asset, not a card blit -- shown after the belt loop's
@@ -63,10 +64,10 @@
 # ASSETS:
 #   bakery/bg_bakery_480x320.bz        LE, kind 0, strip_h=8 -- the belt
 #     board. sprite_engine composites drifting ingredients over this; the
-#     card-sized region at (100,15,280,175) should be a flat/neutral colour
-#     or a matching frame in this art (the recipe/baked card blits on top
-#     of it separately, at the same x=100,y=15 offset).
-#   bakery/bgm_recipe-<name>_280x175.bz   BE, kind 1 -- one per recipe (6),
+#     card-sized region at (100,15,280,169) should be a flat/neutral colour
+#     or a matching frame in this art (the recipe card blits on top of it
+#     separately, at the same x=100,y=15 offset).
+#   bakery/bgm_recipe-<name>_280x169.bz   BE, kind 1 -- one per recipe (6),
 #     card-sized, shown while that recipe is active.
 #   bakery/bgm_baked-<name>_480x320.bz    BE, kind 1 -- one per recipe (6),
 #     FULL SCREEN (not a card blit) -- shown once the recipe is complete,
@@ -125,7 +126,7 @@ DECOYS_PER_ROUND = 1     # see MEMORY NOTE above -- 4 needed + 1 decoy = 5
 ASSET_DIR   = "/assets/static/bakery/"           # Tier A: always resident
 BOARD_PATH  = "/assets/bakery/bg_bakery_480x320.bz"        # Tier B
 RESULT_PATH = "/assets/bakery/bgm_result_480x320.bz"       # Tier B
-RECIPE_CARD_PATH = "/assets/bakery/bgm_recipe-%s_280x175.bz"
+RECIPE_CARD_PATH = "/assets/bakery/bgm_recipe-%s_280x169.bz"
 BAKED_CARD_PATH  = "/assets/bakery/bgm_baked-%s_480x320.bz"   # full screen, not
                                                                # a card blit --
                                                                # see _play_round
@@ -134,30 +135,24 @@ AGAIN_TILE_PATH  = "/assets/menu/btn_again_280x240.bz"     # shared across games
 
 # ── Geometry ─────────────────────────────────────────────────────
 ICON = 96
-CARD_W, CARD_H = 280, 175
+CARD_W, CARD_H = 280, 169
 CARD_X = (config.MAIN_W - CARD_W) // 2   # 100
-CARD_Y = 15                               # card occupies rows 15-189
+CARD_Y = 15                               # card occupies rows 15-183
 
 # Belt track corners as measured off the board art: bottom-left (65,285),
 # bottom-right (420,285). Items are bottom-aligned to y=285 and their
 # left edge ranges over [BELT_X_LEFT, BELT_X_RIGHT - ICON] so the full
 # 96x96 bbox never pokes outside the drawn track horizontally.
 #
-# KNOWN RESIDUAL OVERLAP, unresolved: bottom-aligning a 96px icon to
-# y=285 puts its top row at y=189, and that row's position is FIXED all
-# round (only x ever moves, so sprite_engine always dirties the same
-# vertical strip range: 189 // STRIP_H = strip 23, rows 184-191). The
-# card's last row (189, since CARD_Y + CARD_H - 1 = 15+175-1) falls
-# inside that same strip, so rows 184-189 (6 of that strip's 8 rows) sit
-# in both the card and the belt's dirty range. render_dirty() repaints a
-# dirty strip from raw board pixels across the FULL screen width with no
-# idea the card is blitted on top of it -- so as soon as the belt starts
-# moving, that 6px-tall band along the card's bottom edge gets reset to
-# plain board art and stays that way for the rest of the round (it's not
-# a flicker -- every subsequent repaint targets the same board pixels).
-# Dropping CARD_H to <=169 (card's last row <=183, clear of strip 23
-# entirely) would close this completely; 175 shrank the previous 26-row
-# conflict down to this single 6-row sliver but didn't eliminate it.
+# Card/belt dirty-strip overlap, now closed: a 96px icon bottom-aligned
+# to y=285 has its top row fixed at y=189 all round (only x ever moves),
+# which sprite_engine always dirties as strip 23 (189 // STRIP_H, rows
+# 184-191). CARD_H=169 puts the card's last row at 183 -- CARD_Y +
+# CARD_H - 1 = 15+169-1 -- one row clear of strip 23, so render_dirty()
+# (which repaints a dirty strip from raw board pixels across the FULL
+# screen width, with no idea the card is blitted on top of it) never
+# touches a row the card occupies. 200px and then 175px both left a
+# real overlap here (26 rows, then 6); 169 is the first height with none.
 BELT_X_LEFT  = 65
 BELT_X_RIGHT = 420
 BELT_SPRITE_Y = 285 - ICON                # 189, bottom-aligned to y=285
