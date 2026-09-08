@@ -33,10 +33,12 @@
 # every time, exactly like games/memory/game.py's icons — see that file's
 # comment for why caching them in the shared arena would risk the same
 # "wizard/goblin corruption on Play Again" bug this project already hit
-# once. A dedicated small scratch arena (self._scratch_arena, mirroring
-# Star Bonk!'s _scratch_arena) handles button icons + the recipe/baked
+# once. A small scratch arena handles button icons + the recipe/baked
 # card + end-screen paints, kept separate from the shared arena that holds
-# the round's persistent LE belt sprites.
+# the round's persistent LE belt sprites -- this is literally Star Bonk!'s
+# own already-boot-seated _scratch_arena, reused rather than a second one
+# of Bakery's own (see the load() comment for why: a second lazy 32KB
+# allocation hit the exact fragmentation failure Bonk's already fought).
 #
 # LAYOUT — main screen is 480x320. The recipe card (280x169) sits at
 # (x=100, y=15), matching the pre-composed frame baked into the board art;
@@ -105,6 +107,7 @@ from core.sprite_engine import SpriteEngine, STRIP_H
 from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
 from drivers import flash_assets
 from drivers.touch import TOUCH_TAP
+import games.bonk.game as _bonk
 
 # ── Content ──────────────────────────────────────────────────────
 INGREDIENTS = ("flour", "egg", "sugar", "butter", "milk", "chocolate",
@@ -248,11 +251,20 @@ class MagicBakeryGame(BaseGame):
 
         # Small scratch arena for button icons + card/end-screen paints --
         # kept separate from flash_assets.arena, which holds the round's
-        # persistent LE belt sprites. Lazy-seeded here (not at boot like
-        # Bonk's) -- see the module docstring for why boot-time seating
-        # wasn't attempted blind this round; promote it the same way Bonk
-        # was if this MemoryErrors on real hardware.
-        self._scratch_arena = flash_assets.SpriteArena(32 * 1024)
+        # persistent LE belt sprites. This USED to lazy-allocate its own
+        # 32KB SpriteArena here, and that hit exactly the fragmentation
+        # failure Bonk's own arena already fought and lost to once (see
+        # games/bonk/game.py's module comment): "heap before bakery.load():
+        # free=68176" / "allocating 32768 bytes" failed anyway -- plenty of
+        # free heap, no single 32KB gap, because the other boot-seated
+        # blocks (strip pool, flash_assets.arena, text scratch) are fixed
+        # non-moving walls a non-compacting GC can't route around. Rather
+        # than fight for a SECOND boot-time 32KB reservation (real risk of
+        # blowing the boot budget instead -- see core/kernel.py's ordering
+        # comment), just reuse Bonk's already boot-seated one: only one
+        # game runs at a time, so nothing else needs it while Bakery does.
+        _bonk.seat_scratch_arena()
+        self._scratch_arena = _bonk._scratch_arena
 
         try:
             bg = game_cache.open_background(BOARD_PATH)
