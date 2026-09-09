@@ -116,6 +116,7 @@ from core.sprite_engine import SpriteEngine, STRIP_H
 from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
 from drivers import flash_assets
 from drivers.touch import TOUCH_TAP
+from drivers.haptic import haptic
 import games.bonk.game as _bonk
 
 # ── Content ──────────────────────────────────────────────────────
@@ -694,6 +695,8 @@ class MagicBakeryGame(BaseGame):
                     self.leds.start_effect(self.leds.correct_flash())
                 if self.audio and self.audio.ready:
                     await self.audio.play_sfx("correct.wav", wait=True)
+                if haptic.ready:
+                    await haptic.double_pulse()
                 self._update_progress_leds(len(collected), len(needed))
             else:
                 if self.audio and self.audio.ready:
