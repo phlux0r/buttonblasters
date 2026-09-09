@@ -40,9 +40,9 @@ Usage:
   python3 tools/deploy.py --mpy              # cross-compile modules to .mpy
   python3 tools/deploy.py --dry-run          # stage into build/ only
   python3 tools/deploy.py --port /dev/tty.usbmodem1101
-  python3 tools/deploy.py --sd               # also push SD payload via the
-                                             # mounted /sd (firmware must have
-                                             # mounted the card this session)
+  python3 tools/deploy.py --sd               # also push SD payload -- runs
+                                             # tools/mount_sd.py itself first
+                                             # to guarantee a real /sd mount
 
 Requires: mpremote (pip install mpremote). --mpy also needs mpy-cross
 (pip install mpy-cross) — RP2350 native arch is armv7emsp.
@@ -138,10 +138,28 @@ def install(port, push_sd):
     for child in sorted(STAGE_FW.iterdir()):
         mpremote(port, "cp", "-r", str(child), ":")
     if push_sd:
-        # Requires /sd mounted on the device (the firmware mounts it at
-        # boot when the card is present). If this fails, copy build/sd/*
-        # onto the card with a desktop card reader instead.
-        #
+        # /sd is only the real SD card if main.py's own boot sequence
+        # already ran far enough to mount it (core/kernel.py step 7) --
+        # NOT just because the firmware mounts it "at boot" in general.
+        # If deploy.py's mpremote session took over the REPL before that
+        # happened (a freshly reset/flashed board, say), /sd is nothing
+        # but an ordinary directory on the tiny INTERNAL flash, and every
+        # `cp -r ... :/sd/` below would silently fill THAT up instead --
+        # confirmed on hardware as "No space left on device" mid-copy
+        # despite 32GB genuinely free on the physical card, because the
+        # data never reached it. tools/mount_sd.py detects that exact
+        # case (compares statvfs("/sd") to statvfs("/")), cleans up
+        # whatever got stranded there, and mounts the real card the same
+        # way drivers/assets.py's own mount_sd() does normally.
+        r = subprocess.run(["mpremote", "connect", port, "run",
+                            str(REPO / "tools" / "mount_sd.py")],
+                           capture_output=True, text=True)
+        print(r.stdout, end="")
+        if "SD_MOUNT_OK" not in r.stdout:
+            sys.exit("SD mount failed -- is the card inserted and "
+                     "formatted FAT32? (see tools/mount_sd.py output "
+                     "above). Not attempting the SD push.")
+
         # `cp -r` is purely ADDITIVE -- it never deletes anything already
         # on the card, so a renamed/resized asset (a recipe card that went
         # through three different filenames across one afternoon of
