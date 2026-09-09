@@ -198,7 +198,8 @@ TRACK_MAX  = BELT_X_RIGHT - ICON
 TRACK_SPAN = TRACK_MAX - TRACK_MIN
 SPAWN_GAP_PX = TRACK_SPAN // 2   # min clearance at the mouth before the
                                  # next item is allowed to spawn there
-DRIFT_PX_PER_TICK = 1
+DRIFT_PX_PER_TICK = 2   # was 1 -- faster, per request, now that motion
+                        # reads smoothly at this tick rate
 BELT_TICK_MS = 60      # was 90 (~11fps); trying ~16.7fps -- watch for any
                        # audio/button stutter this steals bandwidth from
 # Deliberately equal to BELT_TICK_MS, not independent of it -- movement
@@ -422,12 +423,24 @@ class MagicBakeryGame(BaseGame):
         for i in range(4):
             await self._paint_slot_empty(i)
 
-        # Full clean board paint FIRST -- render_dirty() always repaints a
-        # dirty strip from raw board pixels across the whole screen width,
-        # with no idea anything's blitted on top of it. Doing this before
-        # the card paint (not after, as this used to) means the card is
-        # the last thing drawn and survives; doing it after would erase
-        # the card immediately, since mark_all() dirties every strip.
+        # Clear the PREVIOUS round's belt sprites (inside _spawn_belt())
+        # BEFORE the full clean board paint below, not after. render_dirty()
+        # composites from whatever's currently in self._engine.sprites --
+        # doing this the other way round meant the "clean" paint actually
+        # re-drew the last round's leftover item (still in the sprite
+        # list at that point), which then sat visible through the whole
+        # card reveal + voice intro, and only vanished the moment the
+        # NEXT round's spawner happened to bring a new item in near the
+        # same spot -- reading as "the old item got replaced in place"
+        # even though nothing ever repositioned it.
+        belt = self._spawn_belt(live_pool or pool, sheets)
+
+        # Full clean board paint -- render_dirty() always repaints a dirty
+        # strip from raw board pixels across the whole screen width, with
+        # no idea anything's blitted on top of it. Doing this before the
+        # card paint (not after) means the card is the last thing drawn
+        # and survives; doing it after would erase the card immediately,
+        # since mark_all() dirties every strip.
         self._engine.mark_all()
         await self._engine.render_dirty()
 
@@ -440,7 +453,6 @@ class MagicBakeryGame(BaseGame):
             await self.audio.play_voice("bake_%s.wav" % recipe, wait=True)
         await asyncio.sleep_ms(400)
 
-        belt = self._spawn_belt(live_pool or pool, sheets)
         self._engine.start(tick_ms=BELT_TICK_MS)
 
         collected = set()
