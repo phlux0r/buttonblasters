@@ -152,42 +152,55 @@ def install(port, push_sd):
         # whatever got stranded there, and mounts the real card the same
         # way drivers/assets.py's own mount_sd() does normally.
         #
-        # This ALL has to run as one continuous mpremote session, not
-        # three separate `mpremote connect` invocations (mount, then rm,
-        # then cp) -- each is its own subprocess that reconnects from
-        # scratch, and disconnecting commonly leaves the board soft-reset
-        # (resuming its normal firmware) rather than sitting in the
-        # mounted state the previous command set up. A soft reset
-        # unmounts /sd immediately, and the freshly-rebooted app hasn't
-        # reached its own SD-mount step by the time the next command
-        # connects -- confirmed on hardware as the exact same fake-mount
-        # failure recurring even with mount_sd.py run just before it.
+        # A previous version of this tried to chain mount + clean + copy
+        # into ONE `mpremote ... run <script> + cp -r ...` invocation to
+        # dodge the "separate connects lose the mount" problem below --
+        # that chain HUNG indefinitely on real hardware (confirmed: it
+        # ran the cleanup, deleting stale per-game folders, then never
+        # reached the copy, leaving the card with LESS on it than before
+        # until the next successful deploy repopulates it). Whatever the
+        # exact cause, don't reintroduce that `+` chain.
         #
-        # So: build one script that mounts (tools/mount_sd.py's own
-        # source) AND cleans every per-game folder about to be pushed
-        # (`cp -r` is purely additive -- it never deletes anything
-        # already on the card, so a renamed/resized asset leaves every
-        # OLD name behind forever, silently eating space -- see git log
-        # for the exact incident), then chain it with the actual copy
-        # using mpremote's `+` syntax, which runs everything in ONE
-        # connection with no disconnect in between.
-        mount_and_clean = (REPO / "tools" / "mount_sd.py").read_text()
-        for game_dir in sorted((STAGE_SD / "assets").iterdir()):
-            if game_dir.is_dir():
-                mount_and_clean += "\n_rm_if_exists(%r)\n" % (
-                    "/sd/assets/" + game_dir.name)
-        script_path = BUILD / "_mount_and_clean.py"
-        script_path.write_text(mount_and_clean)
-
+        # Correct, documented mpremote mechanism instead: a plain
+        # `mpremote connect <port> ...` does an implicit soft-reset before
+        # running its command, which unmounts /sd immediately, and the
+        # freshly-rebooted app hasn't reached its own SD-mount step by
+        # the time a NEW plain connect arrives -- confirmed on hardware
+        # as the fake-mount bug recurring even right after a successful
+        # mount_sd.py run. `mpremote resume <command>` explicitly skips
+        # that soft-reset, picking up the previous session's state (the
+        # mount) instead -- exactly what `mpremote --help` documents it
+        # for. So: one plain connect to mount (a reset here is fine, we
+        # WANT a clean run), then `resume` for every command after that
+        # needs the mount still in place.
         r = subprocess.run(
-            ["mpremote", "connect", port, "run", str(script_path),
-             "+", "cp", "-r", str(STAGE_SD / "assets"), ":/sd/"],
-            capture_output=True, text=True)
+            ["mpremote", "connect", port, "run",
+             str(REPO / "tools" / "mount_sd.py")],
+            capture_output=True, text=True, timeout=60)
         print(r.stdout, end="")
         if "SD_MOUNT_OK" not in r.stdout:
             sys.exit("SD mount failed -- is the card inserted and "
                      "formatted FAT32? (see output above). Not "
                      "attempting the SD push.")
+
+        # `cp -r` is purely ADDITIVE -- it never deletes anything already
+        # on the card, so a renamed/resized asset leaves every OLD name
+        # behind forever, silently eating space. Delete each per-game
+        # folder first so every push starts from a clean slate -- a
+        # mirror, not an overlay. Best-effort: a folder that doesn't
+        # exist yet on a first-ever deploy is fine to skip. `resume`
+        # here, not a plain connect, so the mount from above survives.
+        for game_dir in sorted((STAGE_SD / "assets").iterdir()):
+            if game_dir.is_dir():
+                subprocess.run(["mpremote", "connect", port, "resume", "rm",
+                               "-r", ":/sd/assets/" + game_dir.name],
+                               capture_output=True, timeout=30)
+
+        r = subprocess.run(
+            ["mpremote", "connect", port, "resume", "cp", "-r",
+             str(STAGE_SD / "assets"), ":/sd/"],
+            capture_output=True, text=True, timeout=300)
+        print(r.stdout, end="")
         if r.returncode != 0:
             sys.exit("SD push failed after mounting -- see output above.\n"
                      + r.stderr)
