@@ -143,38 +143,54 @@ def install(port, push_sd):
         # NOT just because the firmware mounts it "at boot" in general.
         # If deploy.py's mpremote session took over the REPL before that
         # happened (a freshly reset/flashed board, say), /sd is nothing
-        # but an ordinary directory on the tiny INTERNAL flash, and every
-        # `cp -r ... :/sd/` below would silently fill THAT up instead --
+        # but an ordinary directory on the tiny INTERNAL flash, and a
+        # `cp -r ... :/sd/` would silently fill THAT up instead --
         # confirmed on hardware as "No space left on device" mid-copy
         # despite 32GB genuinely free on the physical card, because the
         # data never reached it. tools/mount_sd.py detects that exact
         # case (compares statvfs("/sd") to statvfs("/")), cleans up
         # whatever got stranded there, and mounts the real card the same
         # way drivers/assets.py's own mount_sd() does normally.
-        r = subprocess.run(["mpremote", "connect", port, "run",
-                            str(REPO / "tools" / "mount_sd.py")],
-                           capture_output=True, text=True)
+        #
+        # This ALL has to run as one continuous mpremote session, not
+        # three separate `mpremote connect` invocations (mount, then rm,
+        # then cp) -- each is its own subprocess that reconnects from
+        # scratch, and disconnecting commonly leaves the board soft-reset
+        # (resuming its normal firmware) rather than sitting in the
+        # mounted state the previous command set up. A soft reset
+        # unmounts /sd immediately, and the freshly-rebooted app hasn't
+        # reached its own SD-mount step by the time the next command
+        # connects -- confirmed on hardware as the exact same fake-mount
+        # failure recurring even with mount_sd.py run just before it.
+        #
+        # So: build one script that mounts (tools/mount_sd.py's own
+        # source) AND cleans every per-game folder about to be pushed
+        # (`cp -r` is purely additive -- it never deletes anything
+        # already on the card, so a renamed/resized asset leaves every
+        # OLD name behind forever, silently eating space -- see git log
+        # for the exact incident), then chain it with the actual copy
+        # using mpremote's `+` syntax, which runs everything in ONE
+        # connection with no disconnect in between.
+        mount_and_clean = (REPO / "tools" / "mount_sd.py").read_text()
+        for game_dir in sorted((STAGE_SD / "assets").iterdir()):
+            if game_dir.is_dir():
+                mount_and_clean += "\n_rm_if_exists(%r)\n" % (
+                    "/sd/assets/" + game_dir.name)
+        script_path = BUILD / "_mount_and_clean.py"
+        script_path.write_text(mount_and_clean)
+
+        r = subprocess.run(
+            ["mpremote", "connect", port, "run", str(script_path),
+             "+", "cp", "-r", str(STAGE_SD / "assets"), ":/sd/"],
+            capture_output=True, text=True)
         print(r.stdout, end="")
         if "SD_MOUNT_OK" not in r.stdout:
             sys.exit("SD mount failed -- is the card inserted and "
-                     "formatted FAT32? (see tools/mount_sd.py output "
-                     "above). Not attempting the SD push.")
-
-        # `cp -r` is purely ADDITIVE -- it never deletes anything already
-        # on the card, so a renamed/resized asset (a recipe card that went
-        # through three different filenames across one afternoon of
-        # iteration, say) leaves every OLD name behind forever, silently
-        # eating space until "No space left on device" shows up on some
-        # unrelated later file. Delete each per-game folder on the card
-        # first so every push starts from a clean slate -- a proper
-        # mirror, not an overlay. Best-effort (check=False): a folder that
-        # doesn't exist yet on a first-ever deploy is fine to skip.
-        for game_dir in sorted((STAGE_SD / "assets").iterdir()):
-            if game_dir.is_dir():
-                subprocess.run(["mpremote", "connect", port, "rm", "-r",
-                               ":/sd/assets/" + game_dir.name],
-                               capture_output=True)
-        mpremote(port, "cp", "-r", str(STAGE_SD / "assets"), ":/sd/")
+                     "formatted FAT32? (see output above). Not "
+                     "attempting the SD push.")
+        if r.returncode != 0:
+            sys.exit("SD push failed after mounting -- see output above.\n"
+                     + r.stderr)
 
 
 def main():
