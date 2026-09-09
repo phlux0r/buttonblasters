@@ -173,29 +173,31 @@ BELT_SPRITE_Y = 285 - ICON                # 189, bottom-aligned to y=285
 # [TRACK_MIN, TRACK_MAX] at all times -- TRACK_MAX = BELT_X_RIGHT - ICON,
 # so the item's own bbox (left edge .. left edge+ICON) never pokes outside
 # [BELT_X_LEFT, BELT_X_RIGHT], matching the corners measured off the board
-# art exactly. When an item's left edge would drop below TRACK_MIN, it's
-# corrected (x += TRACK_SPAN) in the SAME tick, before that position is
-# ever handed to the renderer -- a one-frame "pop" back to the right side
-# rather than a smooth off-screen exit, but it's the only way to guarantee
-# the item is NEVER drawn outside the belt art's own bounds (a wider,
-# invisible-transit-zone version of this wrapped through screen space well
-# past both corners, which is exactly what "moving across the full width"
-# turned out to be).
+# art exactly.
 #
-# Since every item advances by the same fixed TRACK_SPAN whenever it
-# wraps, and all move at the same speed, their relative spacing (mod
-# TRACK_SPAN) is an invariant -- like evenly-spaced points on a circular
-# track -- so items spaced apart initially can never catch up to and
-# overlap each other, ever, no matter how many wraps they make. BUT that
-# only holds if there's room for them: 96px icons need TRACK_SPAN >=
-# BELT_SLOTS * ICON, and TRACK_SPAN here is only 259px -- enough for 2
-# (192px, 67px of slack) but NOT 3 (288px, impossible without overlap or
-# spilling outside the corners). So BELT_SLOTS is 2, not 3 -- the top end
-# of "2 or 3" doesn't fit this track at full icon size.
+# This is a real conveyor spawner, not a wrap: an item that exits past
+# TRACK_MIN (drifted off the left) or gets tapped is simply DEACTIVATED
+# (hidden, not moved) -- it never "flips back" or teleports. A separate
+# spawner (_maybe_spawn_belt_item, called once per tick) brings in a
+# fresh, independently-random item at TRACK_MAX (the belt's mouth,
+# BELT_X_RIGHT's edge) whenever there's a free slot AND the mouth is
+# clear of whatever's already drifting through it (no other active item
+# within SPAWN_GAP_PX of TRACK_MAX) -- so a new item only ever enters at
+# the right, never appears mid-belt or in a just-vacated spot. Rounds
+# start with every slot inactive (_spawn_belt() doesn't place anything),
+# so the belt is genuinely blank until the spawner brings the first item
+# in on the next tick.
+#
+# 96px icons need enough belt width to have two on screen without
+# overlapping (2*96=192, and TRACK_SPAN below is 259 -- 67px of slack);
+# a 3rd would need 288px, more than this track has, which is why
+# BELT_SLOTS is 2 rather than the "2 or 3" originally asked for.
 BELT_SLOTS = 2
 TRACK_MIN  = BELT_X_LEFT
 TRACK_MAX  = BELT_X_RIGHT - ICON
 TRACK_SPAN = TRACK_MAX - TRACK_MIN
+SPAWN_GAP_PX = TRACK_SPAN // 2   # min clearance at the mouth before the
+                                 # next item is allowed to spawn there
 DRIFT_PX_PER_TICK = 1
 BELT_TICK_MS = 60      # was 90 (~11fps); trying ~16.7fps -- watch for any
                        # audio/button stutter this steals bandwidth from
@@ -472,18 +474,27 @@ class MagicBakeryGame(BaseGame):
                     pass
 
                 for entry in belt:
-                    if entry["sprite"] is None:
+                    if not entry["active"]:
                         continue
-                    # Keep drifting/wrapping even while hidden (active=
-                    # False) -- that's what makes a hidden slot retry
-                    # restocking once per lap instead of staying hidden
-                    # forever once every name is briefly taken.
                     entry["sprite"].move_by(-DRIFT_PX_PER_TICK, 0)
                     if entry["sprite"].x < TRACK_MIN:
-                        entry["sprite"].x += TRACK_SPAN
-                        entry["sprite"]._dirty = True
-                        self._restock_belt_entry(entry, live_pool or pool,
-                                                 sheets, collected, belt)
+                        # Exited off the left, unpicked -- gone. A fresh,
+                        # independently-random item enters at the mouth
+                        # later via _maybe_spawn_belt_item(), never here.
+                        self._deactivate_belt_entry(entry)
+                self._maybe_spawn_belt_item(belt, live_pool or pool, sheets,
+                                            collected)
+
+                touch_down = self.buttons.touch_down
+                if touch_down and not touch_was_down:
+                    tx, ty = self.buttons.touch_pos or (0, 0)
+                    hit = self._find_belt_hit(belt, tx, ty)
+                    if hit is not None:
+                        done = await self._handle_tap(
+                            hit, belt, needed, collected, live_pool or pool, sheets)
+                        if done:
+                            break
+                touch_was_down = touch_down
 
                 touch_down = self.buttons.touch_down
                 if touch_down and not touch_was_down:
@@ -553,10 +564,13 @@ class MagicBakeryGame(BaseGame):
             self._engine.remove(s)
 
         # One Sprite object per slot, seeded here and never recreated --
-        # _restock_belt_entry() only ever repoints an existing sprite's
-        # sheet, so mid-round restocking can't run into MAX_ACTIVE or need
-        # a second engine.add(). Any loadable sheet does as the initial
-        # placeholder; restock immediately below picks the real content.
+        # the spawner only ever repoints an existing sprite's sheet, so
+        # bringing a new item in at the mouth mid-round can't run into
+        # MAX_ACTIVE or need a second engine.add(). Any loadable sheet
+        # does as the initial placeholder; every slot starts INACTIVE and
+        # hidden -- the belt is blank at round start, on purpose. The
+        # spawner (_maybe_spawn_belt_item) brings the first item in on
+        # the round loop's very next tick.
         any_sheet = None
         for n in pool:
             if sheets.get(n) is not None:
@@ -564,14 +578,10 @@ class MagicBakeryGame(BaseGame):
                 break
         belt = []
         for i in range(BELT_SLOTS):
-            # Evenly spaced across the track so the no-overlap invariant
-            # (see the TRACK_MIN/TRACK_MAX/TRACK_SPAN comment in Geometry)
-            # holds from the very first tick, not just after the first wrap.
-            x = TRACK_MAX - (i * TRACK_SPAN) // BELT_SLOTS
-            sprite = self._engine.add(any_sheet, x, BELT_SPRITE_Y) if any_sheet else None
+            sprite = self._engine.add(any_sheet, TRACK_MAX, BELT_SPRITE_Y) if any_sheet else None
+            if sprite is not None:
+                sprite.show(False)
             belt.append({"sprite": sprite, "name": None, "active": False})
-        for entry in belt:
-            self._restock_belt_entry(entry, pool, sheets, set(), belt)
         return belt
 
     def _pick_belt_name(self, pool, collected, belt, exclude_entry=None):
@@ -587,28 +597,43 @@ class MagicBakeryGame(BaseGame):
             return None
         return random.choice(candidates)
 
-    def _restock_belt_entry(self, entry, pool, sheets, collected, belt):
-        """Assign a fresh unique, not-yet-collected ingredient to this
-        slot, or hide it (active=False) if none is available right now --
-        e.g. every remaining name is already active elsewhere on the
-        belt. A hidden slot keeps drifting/wrapping and retries on every
-        lap, so it comes back as soon as a name frees up."""
-        name = self._pick_belt_name(pool, collected, belt, exclude_entry=entry)
-        sheet = sheets.get(name) if name else None
-        if entry["sprite"] is None or sheet is None:
-            entry["active"] = False
-            entry["name"] = None
-            if entry["sprite"] is not None:
-                entry["sprite"].show(False)
+    def _deactivate_belt_entry(self, entry):
+        """An item exited left unpicked, or just got tapped -- either way
+        it's simply gone. Never repositioned, never repointed to a new
+        ingredient in place; a replacement (if any) only ever enters
+        later at the mouth, via _maybe_spawn_belt_item()."""
+        entry["active"] = False
+        entry["name"] = None
+        if entry["sprite"] is not None:
+            entry["sprite"].show(False)
+
+    def _maybe_spawn_belt_item(self, belt, pool, sheets, collected):
+        """Bring one new item in at the mouth (TRACK_MAX) if there's a
+        free slot AND the mouth is actually clear -- no other active item
+        within SPAWN_GAP_PX of it. Called once per tick; a no-op most
+        ticks (belt full, or nothing to spawn yet, or mouth still busy)."""
+        active_entries = [e for e in belt if e["active"]]
+        if len(active_entries) >= BELT_SLOTS:
             return
-        entry["name"] = name
-        entry["active"] = True
-        entry["sprite"].sheet = sheet
-        entry["sprite"].w = sheet.w
-        entry["sprite"].h = sheet.h
-        entry["sprite"].frame = 0
-        entry["sprite"].show(True)
-        entry["sprite"]._dirty = True
+        if any(e["sprite"].x > TRACK_MAX - SPAWN_GAP_PX for e in active_entries):
+            return
+        free_entry = next((e for e in belt if not e["active"]), None)
+        if free_entry is None:
+            return
+        name = self._pick_belt_name(pool, collected, belt, exclude_entry=free_entry)
+        sheet = sheets.get(name) if name else None
+        if free_entry["sprite"] is None or sheet is None:
+            return
+        free_entry["name"] = name
+        free_entry["active"] = True
+        free_entry["sprite"].sheet = sheet
+        free_entry["sprite"].w = sheet.w
+        free_entry["sprite"].h = sheet.h
+        free_entry["sprite"].frame = 0
+        free_entry["sprite"].x = TRACK_MAX
+        free_entry["sprite"].y = BELT_SPRITE_Y
+        free_entry["sprite"].show(True)
+        free_entry["sprite"]._dirty = True
 
     def _find_belt_hit(self, belt, tx, ty):
         for entry in belt:
@@ -664,9 +689,10 @@ class MagicBakeryGame(BaseGame):
         finally:
             self._engine.start(tick_ms=BELT_TICK_MS)
 
-        # collected is already updated above, so a just-completed
-        # ingredient is immediately excluded from whatever replaces it.
-        self._restock_belt_entry(entry, pool, sheets, collected, belt)
+        # Tapped items just vanish from their spot -- a replacement (if
+        # any) only ever enters later at the mouth, via the round loop's
+        # own _maybe_spawn_belt_item() call, never here in place.
+        self._deactivate_belt_entry(entry)
         return len(collected) == len(needed)
 
     def _first_empty_slot(self):
