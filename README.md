@@ -96,7 +96,7 @@ The firmware is a single **MicroPython asyncio** application. `AppKernel.init()`
 
 Background tasks that run for the life of the app: MCP23008 button polling, touch polling, the idle watchdog (dims LEDs and turns off the button-screen backlight after `SCREEN_DIM_S`), plus short-lived audio/LED effect tasks.
 
-All five displays and the SD card share **SPI0**. `drivers/spi_bus.py` serialises access with an asyncio lock and switches the bus clock per device (48 MHz displays, 10 MHz SD) without redundant re-inits.
+All five displays and the SD card share **SPI0**. `drivers/spi_bus.py` serialises access with an asyncio lock and switches the bus clock per device (48 MHz displays, 20 MHz SD) without redundant re-inits.
 
 ### Memory model (important)
 
@@ -149,7 +149,7 @@ class MyGame(BaseGame):
         await super().unload()   # stops audio, evicts caches, clears screens
 ```
 
-For a standard "result card + Again/Back tiles" ending, set the `RESULT_*` class attributes and call `await self.show_end_screen(score_str)` — it paints the card, stars, tiles, plays the cheer, and returns `"again"` or `"back"` (with an idle timeout). See `games/memory/game.py` for the shortest example.
+If your game is scored by time rather than points, call `self.note_best_time(seconds)` in `_end_screen()` first: it tracks the record across replays, returns the `BEST!`/`TIME` line for the card, and makes a faster run count as a high score (a points-only comparison can never improve once the score is maxed). For a standard "result card + Again/Back tiles" ending, set the `RESULT_*` class attributes and call `await self.show_end_screen(score_str, extra_line=...)` — it paints the card, stars, tiles, plays the cheer, and returns `"again"` or `"back"` (with an idle timeout). See `games/memory/game.py` for the shortest example.
 
 **3. Register it** in `games/registry.py`:
 ```python

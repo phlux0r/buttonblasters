@@ -112,6 +112,8 @@ class BaseGame:
         self.level        = 1
         self.best_score   = best_score      # persisted high score, at game start
         self.best_time_s  = best_time_s     # persisted best clean-run time, if any
+        self._beat_best_time = False        # set by note_best_time(), consumed
+                                             # by announce_round_complete()
         self._running     = False
         self._quit        = False
 
@@ -204,21 +206,54 @@ class BaseGame:
             self.leds.start_effect(self.leds.level_up())
         await self.audio.play_voice("level_up.wav", wait=True)
 
+    @staticmethod
+    def format_time(seconds: float) -> str:
+        total = int(seconds)
+        return "%d:%02d" % (total // 60, total % 60)
+
+    def note_best_time(self, time_s):
+        """Record a completed clean-run time and return the end screen's
+        label for it: "BEST! m:ss" on a new record, "TIME m:ss" otherwise
+        (None if time_s is None, i.e. the run doesn't qualify for timing).
+
+        best_time_s is persisted at game start and bumped IN MEMORY here,
+        so consecutive 'play again' runs in one session compare against
+        each other too, not just against what was on the card at launch --
+        the same pattern announce_round_complete() uses for best_score.
+
+        Call this from the game's _end_screen() BEFORE show_end_screen(),
+        so the cheer below knows a record was set. Games whose real
+        achievement is TIME rather than points (Magic Bakery, whose score
+        caps at 3 recipes) need this to get a 'new high score' cue at
+        all -- score alone can never improve again once it's maxed."""
+        if time_s is None:
+            return None
+        if self.best_time_s is None or time_s < self.best_time_s:
+            self.best_time_s     = time_s
+            self._beat_best_time = True
+            return "BEST! " + self.format_time(time_s)
+        return "TIME " + self.format_time(time_s)
+
     async def announce_round_complete(self):
         """End-of-round-set cheer. Call this once from the game's own end
         screen, after the result is drawn, so the cue lands with "you
         finished" rather than with "you're leaving" (that used to be played
         by the kernel after the player chose to exit back to the carousel).
-        Compares against best_score (persisted at game start, and bumped
-        in-memory on 'play again' loops) so a beaten high score is caught
-        on every round-set, not just the final one before quitting."""
-        if not (self.audio and self.audio.ready):
-            return
+
+        A record is EITHER a beaten high score or a beaten best time (see
+        note_best_time), both compared against values persisted at game
+        start and bumped in-memory on 'play again' loops, so a record is
+        caught on every round-set, not just the final one before
+        quitting."""
+        record = self._beat_best_time
+        self._beat_best_time = False
         if self.score > self.best_score:
             self.best_score = self.score
-            await self.audio.play_voice("new_high_score.wav", wait=True)
-        else:
-            await self.audio.play_voice("well_done.wav", wait=True)
+            record = True
+        if not (self.audio and self.audio.ready):
+            return
+        await self.audio.play_voice(
+            "new_high_score.wav" if record else "well_done.wav", wait=True)
 
     # ── Shared end screen ────────────────────────────────────────
     # Every game ends a round-set the same way: result card on the main

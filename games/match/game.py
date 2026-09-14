@@ -98,11 +98,6 @@ def _fb_idx(name):
     return s % len(_FALLBACK)
 
 
-def _format_time(seconds: float) -> str:
-    total = int(seconds)
-    return "%d:%02d" % (total // 60, total % 60)
-
-
 class ShapeMatchGame(BaseGame):
 
     GAME_ID      = "match"
@@ -357,17 +352,8 @@ class ShapeMatchGame(BaseGame):
 
     async def _end_screen(self):
         score_str = "%d of %d" % (self.score, MAX_SCORE)
-        # Only a perfect round-set has a time worth showing. new_best is
-        # compared/updated in-memory here (same pattern as
-        # announce_round_complete()'s self.best_score bump) so consecutive
-        # "Play again" runs in one session compare against each other too,
-        # not just against what was persisted at game start.
-        time_str = None
-        if self._finish_time_s is not None:
-            new_best = self.best_time_s is None or self._finish_time_s < self.best_time_s
-            if new_best:
-                self.best_time_s = self._finish_time_s
-            time_str = ("BEST! " if new_best else "TIME ") + \
-                _format_time(self._finish_time_s)
+        # Only a perfect round-set has a time worth showing; note_best_time
+        # returns None for anything else.
+        time_str = self.note_best_time(self._finish_time_s)
         return await self.show_end_screen(score_str, extra_line=time_str)
 

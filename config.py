@@ -51,17 +51,20 @@ SPI_FREQ_DISPLAY = 48_000_000    # starting step — tune upward per notes above
 SPI_FREQ_SD_INIT =    400_000    # SD spec's power-up negotiation speed —
                                   # NOT the breadboard limitation below,
                                   # leave this one alone regardless of build
-SPI_FREQ_SD_DATA =  10_000_000   # was 400kHz (confirmed breadboard ceiling,
-                                  # EIO at >=1.32MHz) -- now soldered, trying
-                                  # the target this was always aiming for.
-                                  # SPI_FREQ_DISPLAY runs 48MHz clean on this
-                                  # same bus/board, so the wiring itself isn't
-                                  # the limiting factor. NOT yet bench-confirmed
-                                  # at this exact value -- run test_sd_card.py
-                                  # and watch for EIO/"timeout waiting for v2
-                                  # card"; step back down (try 4_000_000, then
-                                  # 1_000_000) if it throws rather than assuming
-                                  # 10MHz is safe untested.
+SPI_FREQ_SD_DATA =  20_000_000   # ✓ BENCH-CONFIRMED on the soldered board.
+                                  # History: 400kHz was the breadboard ceiling
+                                  # (EIO at >=1.32MHz), then 10MHz once
+                                  # soldered, now 20MHz. This rate matters
+                                  # more than it used to: the per-game menu
+                                  # art is STREAMED from the card on every
+                                  # carousel move (see tools/deploy.py), so
+                                  # it is directly in the scroll-latency
+                                  # path. If a future card/wiring change
+                                  # makes reads flaky, symptoms are EIO or
+                                  # "timeout waiting for v2 card" from
+                                  # test_sd_card.py -- step back to
+                                  # 10_000_000 before suspecting anything
+                                  # else.
 
 # ── ILI9488 main display (4.0" IPS 320×480) ─────────────────────
 PIN_CS_MAIN  = 6

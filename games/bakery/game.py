@@ -304,7 +304,6 @@ class MagicBakeryGame(BaseGame):
         self._running = True
         self.score = 0            # recipes completed this game
         self._total_elapsed_ms = 0
-        self._best_elapsed_ms = None
 
         while True:
             recipes = list(RECIPE_NAMES)
@@ -328,10 +327,6 @@ class MagicBakeryGame(BaseGame):
 
             if not self._running:
                 break   # mid-game BACK/HOME -- exit immediately, no end screen
-
-            if self.score == ROUNDS_PER_GAME:
-                if self._best_elapsed_ms is None or self._total_elapsed_ms < self._best_elapsed_ms:
-                    self._best_elapsed_ms = self._total_elapsed_ms
 
             choice = await self._end_screen()
             if choice == "back":
@@ -710,10 +705,20 @@ class MagicBakeryGame(BaseGame):
     # ── End screen ───────────────────────────────────────────────
 
     async def _end_screen(self):
-        if self.score == ROUNDS_PER_GAME:
-            total_s = self._total_elapsed_ms / 1000
-            score_str = "%d:%02d" % (int(total_s) // 60, int(total_s) % 60)
+        # This game is scored by TIME, not points: self.score caps at 3
+        # recipes, so once a player has baked all three even once, score
+        # alone can never improve again and every later perfect run would
+        # be cheered as merely "well done". note_best_time() is what makes
+        # a faster run count as a record (and puts BEST!/TIME on the card).
+        # Only a full clean set is worth timing -- a part-finished run
+        # isn't comparable, so it passes None and gets no time line.
+        clean_s = (self._total_elapsed_ms / 1000
+                   if self.score == ROUNDS_PER_GAME and self._total_elapsed_ms
+                   else None)
+        time_str = self.note_best_time(clean_s)
+        if clean_s is not None:
+            score_str = "All %d baked!" % ROUNDS_PER_GAME
         else:
             score_str = "%d of %d baked" % (self.score, ROUNDS_PER_GAME)
-        return await self.show_end_screen(score_str)
+        return await self.show_end_screen(score_str, extra_line=time_str)
 
