@@ -22,7 +22,6 @@ def _register(module_path, class_name):
             mod = getattr(mod, part)
         cls = getattr(mod, class_name)
         REGISTRY.append(cls)
-        print(f"[registry] registered: {cls.GAME_ID} — {cls.TITLE}")
     except Exception as e:
         print(f"[registry] failed to load {module_path}: {e}")
 

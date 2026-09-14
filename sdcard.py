@@ -115,7 +115,6 @@ class SDCard:
             self.sectors = capacity // 512
         else:
             raise OSError("SD card CSD format not supported")
-        # print('sectors', self.sectors)
 
         # CMD16: set block length to 512 bytes
         if self.cmd(16, 512) != 0:
@@ -131,7 +130,6 @@ class SDCard:
             if self.cmd(41, 0) == 0:
                 # SDSC card, uses byte addressing in read/write/erase commands
                 self.cdv = 512
-                # print("[SDCard] v1 card")
                 return
         raise OSError("timeout waiting for v1 card")
 
@@ -149,7 +147,6 @@ class SDCard:
                 else:
                     # SDHC/SDXC card, uses block addressing in read/write/erase commands
                     self.cdv = 1
-                # print("[SDCard] v2 card")
                 return
         raise OSError("timeout waiting for v2 card")
 

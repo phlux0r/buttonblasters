@@ -28,7 +28,7 @@ from drivers.buttons import buttons
 from drivers.touch import touch
 from drivers.audio import audio
 from drivers.leds import leds
-from drivers.haptic import haptic
+from drivers.haptic import haptic   # noqa: F401 -- import drives GP22 LOW at boot
 from drivers.assets import assets
 from drivers.spi_bus import spi_bus
 from drivers import flash_assets
@@ -78,7 +78,7 @@ class AppKernel:
         # would be shrinking something's SIZE (SPRITE_BUDGET or STRIP_H),
         # not reordering further.
         seat_bg_scratch()
-        print(f"[kernel] heap after display scratch arena: free={gc.mem_free()}")
+        free_after = [gc.mem_free()]
 
         # 1a-pre. Pre-warm the ILI9488's own full-width blit scratch buffer
         # (23,040B) BEFORE anything else claims heap. Confirmed on hardware
@@ -91,7 +91,7 @@ class AppKernel:
         # story. Goes first because it's now the most fragile, not because
         # it's the biggest.
         display.main.warm_blit_scratch()
-        print(f"[kernel] heap after blit scratch: free={gc.mem_free()}")
+        free_after.append(gc.mem_free())
 
         # 1a-pre2. Pre-grow the shared text-scratch buffers to the largest
         # size any game will ever ask for (currently Bonk's scale-10 "GO!",
@@ -114,7 +114,7 @@ class AppKernel:
         # block, so moving it this early costs the two big reservations
         # below very little of their own "freshest heap" advantage.
         warm_text_scratch()
-        print(f"[kernel] heap after text scratch: free={gc.mem_free()}")
+        free_after.append(gc.mem_free())
 
         # 1a. Seat the main-screen strip buffer pool FIRST, on the freshest
         # heap of all — before even flash_assets.init() below. Confirmed on
@@ -132,13 +132,19 @@ class AppKernel:
         # seat_shared_pool() / _shared_pool) — never freed until reset.
         from core.sprite_adapter import seat_shared_pool
         seat_shared_pool()
-        print(f"[kernel] heap after strip pool: free={gc.mem_free()}")
+        free_after.append(gc.mem_free())
 
         # 1b. Seat the flash-asset sprite arena on the FRESHEST heap — before
         # any subsystem (touch/audio/LEDs/SD) churns it, and before the boot
         # card paints (paint_main_bg borrows the arena). One 96KB alloc.
         flash_assets.init()
-        print(f"[kernel] heap after flash_assets arena: free={gc.mem_free()}")
+        free_after.append(gc.mem_free())
+        # One line, free heap after each reservation in the order above --
+        # the numbers to watch when adding anything (see README, Memory
+        # model). A reservation failing shows up as a MemoryError before
+        # this prints, so the trace still says which one.
+        print("[kernel] heap free after scratch/blit/text/pool/arena: "
+              + "/".join(str(n) for n in free_after))
 
         # Boot splash — baked card if present, else the text splash.
         if not await display.paint_main_bg(_BOOT_BG):
@@ -149,7 +155,6 @@ class AppKernel:
         try:
             i2c = touch.init_blocking()   # returns I2C instance
             buttons.attach_touch(touch)
-            print("[kernel] touch ready")
         except Exception as e:
             print(f"[kernel] touch init failed: {e}")
             i2c = None
@@ -158,16 +163,13 @@ class AppKernel:
         if i2c is not None:
             try:
                 buttons.init_mcp(i2c)
-                print("[kernel] buttons ready via MCP23008")
             except Exception as e:
                 print(f"[kernel] MCP23008 init failed: {e}")
         else:
             print("[kernel] skipping MCP23008 — no I2C bus")
 
         # 4. Audio (already initialised at import — just confirm)
-        if audio.ready:
-            print("[kernel] audio ready")
-        else:
+        if not audio.ready:
             print("[kernel] audio not ready — check I2S wiring")
 
         # 5. LEDs
@@ -179,9 +181,7 @@ class AppKernel:
             print("[kernel] LEDs not ready")
             await asyncio.sleep_ms(200)
 
-        # 6. Haptic — already initialised LOW at import
-        if haptic.ready:
-            print("[kernel] haptic ready")
+        # 6. Haptic — already initialised LOW at import (prints its own line)
 
         # 7. SD card (deferred — non-fatal)
         sd_ok = assets.mount_sd()
@@ -226,13 +226,13 @@ class AppKernel:
             await self._menu.show_loading()
             audio.stop_all()             # NEW — clean silence during install, not a stall
 
-            print(f"[kernel] loading {game.GAME_ID}")
             if leds.ready:
                 leds.start_effect(leds.chase(100, 200, 100))
             await game_cache.install(game.GAME_ID)      # Tier B — SD → littlefs
             audio.set_game(game.GAME_ID)                # game's Tier B audio dir
-            print(f"[kernel] heap before {game.GAME_ID}.load(): "
-                  f"free={gc.mem_free()}")
+            # The one per-launch line: free heap right before load() is the
+            # number every fragmentation failure in HARDWARE_NOTES.md keys on.
+            print(f"[kernel] {game.GAME_ID}: load  free={gc.mem_free()}")
             try:
                 await game.load()
             except Exception as e:
@@ -257,7 +257,6 @@ class AppKernel:
             leds.stop_effect()          # not off() — off() clears pixels but
                                         # leaves the effect task rewriting them
 
-            print(f"[kernel] running {game.GAME_ID}")
             try:
                 result = await game.run()
             except Exception as e:
@@ -276,7 +275,6 @@ class AppKernel:
             await game.unload()
             audio.set_game(None)
             game_cache.evict(game.GAME_ID)        # Tier B evict
-            print(f"[kernel] unloaded {game.GAME_ID}")
 
     async def _transition_to_game(self, game):
         # Each game owns its own intro (e.g. Match It!'s category card) — no
@@ -309,13 +307,11 @@ class AppKernel:
                 # regardless of what firmware does).
                 display.set_btn_backlight(False)
                 self._dimmed = True
-                print("[kernel] idle — dimmed")
             elif idle_s < config.SCREEN_DIM_S and self._dimmed:
                 if leds.ready:
                     leds.set_brightness(config.LED_BRIGHTNESS)
                 display.set_btn_backlight(True)
                 self._dimmed = False
-                print("[kernel] input resumed — undimmed")
 
     # scores.json lives on the SD card, which shares SPI0 with the displays.
     # Every read/write must run inside spi_bus.raw() at the SD-safe clock —

@@ -173,12 +173,12 @@ class DisplayManager:
 
     def init_all(self):
         """Initialise all 5 displays at boot. Must run before asyncio."""
-        self.main.init_blocking()
-        print("[display] main ILI9488 ready")
+        self.main.init_blocking()          # prints its own ready line
         # All ST7789s share a reset — BTN-0 owns the reset pin
-        for i, d in enumerate(self.btns):
+        for d in self.btns:
             d.init_blocking()
-            print(f"[display] BTN-{i} ST7789 ready")
+        print(f"[display] {len(self.btns)}x ST7789 ready  "
+              f"{config.BTN_W}×{config.BTN_H}  CS=GP{config.PIN_CS_BTN}")
 
     def set_btn_backlight(self, on: bool):
         """Turn the 4 button screens' shared backlight (GP13) on/off. The

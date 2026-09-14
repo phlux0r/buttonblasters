@@ -150,9 +150,8 @@ class ButtonManager:
         current = self._mcp_read(_IODIR)
         self._mcp_write(_IODIR, current | config.MCP_BTN_MASK)
         self._mcp_write(_GPPU,  config.MCP_BTN_MASK)
-        print(f"[buttons] MCP23008 button pins configured  "
-              f"IODIR=0x{self._mcp_read(_IODIR):02X}  "
-              f"GPPU=0x{self._mcp_read(_GPPU):02X}")
+        print(f"[buttons] MCP23008 ready  0x{self._mcp_addr:02X}  "
+              f"mask=0x{config.MCP_BTN_MASK:02X}")
 
     def attach_touch(self, touch_driver):
         """Wire TouchDriver queue so touch events appear alongside buttons."""

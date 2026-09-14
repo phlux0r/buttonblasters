@@ -110,7 +110,7 @@ The RP2350 heap is ~450 KB and MicroPython's GC does not compact. The codebase h
 | Strip buffer pool (2× RGB666 + 2× RGB565 strips, `STRIP_H=8`) | ~37 KB | `core/sprite_adapter.py` |
 | Sprite arena (bump allocator) | 96 KB | `drivers/flash_assets.py` |
 
-Games borrow from these arenas with `arena.reset()` + `arena.alloc()` and must never allocate large buffers themselves. The kernel prints `gc.mem_free()` after each reservation at boot — watch those numbers when adding anything.
+Games borrow from these arenas with `arena.reset()` + `arena.alloc()` and must never allocate large buffers themselves. The kernel prints one line at boot with the free heap after each reservation (`heap free after scratch/blit/text/pool/arena: …`) — watch those numbers when adding anything.
 
 ---
 
