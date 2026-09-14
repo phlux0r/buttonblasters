@@ -29,7 +29,10 @@ them at game load:
                                                    game_cache.open_background's
                                                    SD fallback -- ~1MB of
                                                    per-game menu art that
-                                                   used to fill half of flash)
+                                                   used to fill half of flash.
+                                                   Converted to RAW chunks
+                                                   while staging: see
+                                                   to_raw_bba)
   assets/match/bgm_*.bz         /sd/assets/match  (Tier B — game_cache
   (everything else under a      installs to /assets/<id> at game load)
    per-game assets/<id>/ folder,
@@ -57,8 +60,10 @@ Requires: mpremote (pip install mpremote). --mpy also needs mpy-cross
 
 import argparse
 import shutil
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -80,6 +85,40 @@ PER_GAME_MENU_PREFIXES = ("bgm_menu-", "btn_menu-")
 
 def _is_per_game_menu_art(name):
     return name.startswith(PER_GAME_MENU_PREFIXES)
+
+
+# BBA1 container (see tools/bake_assets.py's docstring for the layout).
+_BBA_MAGIC = b"BBA1"
+_BBA_FLAG_RAW = 0x01
+
+
+def to_raw_bba(data: bytes) -> bytes:
+    """Return the same BBA1 asset with every chunk stored uncompressed
+    (FLAG_RAW set). Used for art that is STREAMED from the SD card rather
+    than installed to flash: space on the card is free, but on the RP2350
+    a compressed strip costs ~275 single-sector reads driven from Python
+    plus a byte-at-a-time inflate, while a raw strip is one multi-sector
+    readinto and no inflate -- roughly 2x faster per paint on the bench.
+    The device loader already handles both (drivers/flash_assets.py's
+    Background.read_strip raw path). Idempotent on an already-raw file."""
+    if data[:4] != _BBA_MAGIC:
+        raise ValueError("not a BBA1 asset")
+    kind, strip_h, w, h, frames, flags, n, _r = struct.unpack("<BBHHBBHH", data[4:16])
+    if flags & _BBA_FLAG_RAW:
+        return data
+    table_end = 16 + n * 8
+    chunks = []
+    for i in range(n):
+        off, ln = struct.unpack_from("<II", data, 16 + i * 8)
+        chunks.append(zlib.decompress(data[table_end + off:table_end + off + ln]))
+    header = _BBA_MAGIC + struct.pack("<BBHHBBHH", kind, strip_h, w, h, frames,
+                                      flags | _BBA_FLAG_RAW, n, 0)
+    table = bytearray()
+    off = 0
+    for c in chunks:
+        table += struct.pack("<II", off, len(c))
+        off += len(c)
+    return header + bytes(table) + b"".join(chunks)
 
 
 # Stale per-game menu art left on littlefs by deploys from before the split
@@ -129,8 +168,13 @@ def stage():
     for f in sorted((REPO / "assets" / "menu").iterdir()):
         if not f.is_file():
             continue
-        dest = STAGE_SD if _is_per_game_menu_art(f.name) else STAGE_FW
-        shutil.copy2(f, dest / "assets" / "menu" / f.name)
+        if _is_per_game_menu_art(f.name):
+            # SD-streamed: store raw (see to_raw_bba) -- the repo keeps the
+            # compressed bake, the card gets the fast-to-paint version.
+            (STAGE_SD / "assets" / "menu" / f.name).write_bytes(
+                to_raw_bba(f.read_bytes()))
+        else:
+            shutil.copy2(f, STAGE_FW / "assets" / "menu" / f.name)
     shutil.copytree(REPO / "assets" / "sys",  STAGE_FW / "assets" / "sys")
     static_src = REPO / "assets" / "static"
     if static_src.is_dir():

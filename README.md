@@ -229,7 +229,7 @@ python3 tools/verify_bake.py art/spr_x.png assets/static/x/spr_x.sz   # colour-k
 ### Tiers
 
 - **Tier A** (`assets/sys`, the shared Again/Back/Next/Prev tiles in `assets/menu`, `assets/static/<game>`): permanent residents on littlefs. Small sprites and system art.
-- **Per-game menu art** (`assets/menu/bgm_menu-*`, `btn_menu-*`): pushed to `/sd/assets/menu/` by `deploy.py --sd` and streamed from the card strip by strip whenever the carousel shows them. They compress only ~2:1 and were half of all flash in use; each new game adds about 220 KB, so they never go on flash.
+- **Per-game menu art** (`assets/menu/bgm_menu-*`, `btn_menu-*`): pushed to `/sd/assets/menu/` by `deploy.py --sd` and streamed from the card strip by strip whenever the carousel shows them. `deploy.py` converts them to uncompressed chunks while staging (one multi-sector read per strip, no inflate), since card space is free and the RP2350's time is not. They compress only ~2:1 and were half of all flash in use; each new game adds about 220 KB, so they never go on flash.
 - **Tier B** (`assets/<game>/`): large backgrounds. Deployed to the SD card at `/sd/assets/<game>/` and copied to littlefs `/assets/<game>/` by `core/game_cache.py` when the game loads, then deleted at unload. Files that don't fit are streamed strip-by-strip from SD instead.
 
 ### SD Card Layout
