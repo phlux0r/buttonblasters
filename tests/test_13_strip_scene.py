@@ -29,9 +29,10 @@
 import gc
 import time
 import asyncio
-from machine import Pin, SPI
+from machine import Pin
 
-from strip_renderer import StripRenderer, MAIN_W, MAIN_H, STRIP_H, DISPLAY_FREQ
+from drivers.strip_renderer import StripRenderer, MAIN_W, MAIN_H, STRIP_H, DISPLAY_FREQ
+from drivers.spi_bus import spi_bus     # shared SPI0 (same pins/freq as config)
 
 # --- confirmed pin map (main display on SPI0) -----------------------------
 PIN_SCK  = 18
@@ -119,18 +120,15 @@ async def main():
     # hardware reset pulse
     rst(1); time.sleep_ms(10); rst(0); time.sleep_ms(20); rst(1); time.sleep_ms(120)
 
-    spi = SPI(0, baudrate=DISPLAY_FREQ, polarity=0, phase=0,
-              sck=Pin(PIN_SCK), mosi=Pin(PIN_MOSI), miso=Pin(PIN_MISO))
-
-    def set_bus_freq(hz):
-        # ALWAYS re-init -- never trust a cached freq (the _current_freq
-        # desync gotcha). Here it also proves the finally/restore path.
-        spi.init(baudrate=hz, polarity=0, phase=0)
+    # The renderer now takes the shared bus object (it holds the bus lock
+    # for every strip) rather than a raw SPI + freq callback.
+    spi = spi_bus.spi
+    spi_bus.set_freq(DISPLAY_FREQ)
 
     _Init(spi, cs, dc).run()
     print("ILI9488 init done.")
 
-    r = StripRenderer(spi, cs, dc, set_bus_freq)
+    r = StripRenderer(spi_bus, cs, dc)
 
     gc.collect()
     free_before = gc.mem_free()

@@ -13,8 +13,9 @@ Main-screen path is fully wired:
     never touches src565 (only blit_sd does), so it's free real estate. No
     new allocation anywhere in this file.
   * push_strip() = StripRenderer.blit_ram() windowed to one strip: it does
-    the viper 565LE→666 convert, the RAMWR/CS-low framing, the transmit, the
-    event-loop yield, and the DISPLAY_FREQ restore in its own finally.
+    the viper 565LE→666 convert, the RAMWR/CS-low framing, the transmit and
+    the event-loop yield, all while holding the shared SPI0 bus lock (see
+    drivers/strip_renderer.py's BUS LOCKING note).
 
 Button path: one seam left (# >>> WIRE:) for blit_btn_buf / blit_rgb565 —
 wire when the ST7789 driver object is at hand.
@@ -35,7 +36,7 @@ Usage in a game:
 
 from machine import Pin
 from drivers.spi_bus import spi_bus
-from drivers.strip_renderer import StripRenderer, RGB565_STRIP, DISPLAY_FREQ
+from drivers.strip_renderer import StripRenderer, RGB565_STRIP
 import config
 
 
@@ -43,18 +44,12 @@ def make_main_strip_renderer():
     """Construct a StripRenderer wired to the ILI9488 main display's real
     CS/DC pins and the shared SPI0 bus. Each call makes its own Pin handles
     for GP{PIN_CS_MAIN,PIN_DC_MAIN} — MicroPython allows multiple Pin
-    objects for the same GPIO, and only one code path (this renderer, or
-    the normal ILI9488 fill/blit path) ever drives the main display within
-    a single game, so there's no contention. First real caller of
-    StripRenderer/sprite_engine — see HARDWARE_NOTES.md before assuming the
-    150KB buffer pool and the blocking transmit path are bench-verified."""
+    objects for the same GPIO, and the renderer and the normal ILI9488
+    fill/blit path serialise on the bus lock, so they never drive the
+    panel at the same time."""
     cs = Pin(config.PIN_CS_MAIN, Pin.OUT, value=1)
     dc = Pin(config.PIN_DC_MAIN, Pin.OUT, value=1)
-    return StripRenderer(spi_bus.spi, cs, dc, spi_bus.set_freq)
-
-
-def _freq_noop(hz):
-    pass
+    return StripRenderer(spi_bus, cs, dc)
 
 
 # Persistent, module-level (like flash_assets.arena) instead of the pool's
@@ -83,56 +78,37 @@ def seat_shared_pool():
 class MainScreenAdapter:
     """Adapter for sprite_engine.SpriteEngine on the ILI9488.
 
-    renderer: a constructed StripRenderer (spi, cs, dc, set_bus_freq wired).
+    renderer: a constructed StripRenderer (bus, cs, dc wired).
 
-    bypass_freq (default True): while the pool is open, set the bus to
-    DISPLAY_FREQ once and replace renderer.set_bus_freq with a no-op, so
-    blit_ram's per-strip entry+finally freq calls don't do 2 spi.init()s
-    per strip (bench: ~97ms/strip unaccounted = the difference between
-    ~1.5s and ~0.5s full paints). SAFE because flash-asset games never
-    change the bus speed: flash reads don't touch SPI0, and the ST7789
-    blits also run at DISPLAY_FREQ. Set bypass_freq=False for any game
-    that touches SD mid-game (blit_sd / assets.read on SPI0) — the real
-    set_bus_freq is always restored at close(), before the pool's own
-    freq-restoring __exit__ runs."""
+    Bus clock: blit_ram() sets it through spi_bus's cache-aware path on
+    every strip, which is a compare (not an spi.init()) whenever the clock
+    is already at DISPLAY_FREQ — so there's no longer any need for the
+    old open()-time "set once and no-op the setter" bypass (that hack
+    existed to dodge ~97ms/strip of redundant spi.init() calls, before the
+    bus wrapper cached the current frequency). A game that reads SD mid-
+    scene just leaves the clock at SD speed for that read; the next strip
+    pushes it back."""
 
-    def __init__(self, renderer, bypass_freq=True):
+    def __init__(self, renderer):
         self._r = renderer
         self._pool = None
-        self._bypass = bypass_freq
-        self._real_freq = None
 
     # ------------------------------------------------------------ lifetime
 
     def open(self):
         """Attach to the shared strip buffer pool (seated at boot by
-        seat_shared_pool() — this call is just a defensive fallback, same
-        pattern as games/bonk/game.py's scratch arena). Call at game
-        load()."""
+        seat_shared_pool() — this call is just a defensive fallback). Call
+        at game load()."""
         if self._pool is not None:
             return
         seat_shared_pool()
         self._pool = _shared_pool
-        if self._bypass:
-            self._real_freq = self._r.set_bus_freq
-            self._real_freq(DISPLAY_FREQ)          # once, for the whole game
-            self._r.set_bus_freq = _freq_noop
 
     def close(self):
-        """Restore display bus freq and detach from the shared pool. Call
-        at unload(), ideally from a finally so a crashing game can't leak
-        the freq-bypass state. Does NOT free the pool's buffers — it's
-        shared/persistent for the whole power-on session now, not scoped to
-        one game (see seat_shared_pool())."""
-        if self._real_freq is not None:
-            self._r.set_bus_freq = self._real_freq
-            self._real_freq = None
-        if self._pool is not None:
-            self._pool = None
-            try:
-                self._r.set_bus_freq(DISPLAY_FREQ)
-            except Exception:
-                pass
+        """Detach from the shared pool. Call at unload(). Does NOT free the
+        pool's buffers — it's shared/persistent for the whole power-on
+        session, not scoped to one game (see seat_shared_pool())."""
+        self._pool = None
 
     @property
     def is_open(self):
@@ -150,7 +126,7 @@ class MainScreenAdapter:
 
     async def push_strip(self, y, rows, src_le):
         """Transmit one composed strip: rows y..y+rows-1, full width.
-        blit_ram does convert + window + RAMWR framing + freq restore."""
+        blit_ram does convert + window + RAMWR framing, under the bus lock."""
         await self._r.blit_ram(self._pool, src_le, y0=y, rows=rows)
 
 

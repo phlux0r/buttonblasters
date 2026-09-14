@@ -39,15 +39,25 @@
 #     DMA changes later. Window setup, CS framing, viper convert, and the
 #     public API stay identical. See the DMA note on _start_transmit.
 #
-# INTEGRATION SEAMS you wire to the existing firmware by hand:
-#   1. Import geometry/freqs from config instead of the local consts below.
-#   2. Pass the real ILI9488 raw `spi`, `cs`, `dc` pins into __init__.
-#   3. Pass `set_bus_freq(hz)` -- wire it to the shared-bus wrapper. Per the
-#      _current_freq desync gotcha it MUST always re-init the hardware, never
-#      trust the cache. blit_* restores DISPLAY_FREQ in a finally regardless.
-#   4. For blit_sd, supply a `read_band` callback that handles SD_CS/vfs and
-#      the 400kHz bus switch (template in the docstring). SD and the display
-#      share SPI0, so this is inherently serial -- see the shared-bus note.
+# BUS LOCKING (the rule every other SPI0 user already follows)
+#   StripRenderer takes the shared drivers.spi_bus.SpiBus and holds its
+#   asyncio lock -- via spi_bus.raw(DISPLAY_FREQ) -- for the whole of every
+#   strip it pushes, including the event-loop yield in _wait_transmit().
+#   Before this it wrote the raw SPI object with NO lock, so that yield
+#   (CS still LOW, mid-RAMWR) was an open window for any other task to
+#   take the lock and drive the bus: a button-screen fill or an SD read
+#   landing there corrupted whichever transfer lost -- confirmed on
+#   hardware as tearing on every screen during Bakery's belt tick, and
+#   worked around game-side by stopping the engine before every other
+#   draw. With the lock held here, display draws and locked SD reads
+#   simply queue behind the current strip (~2ms at STRIP_H=8 / 48MHz).
+#   The ONE remaining unlocked SPI0 user is drivers/audio.py's SD clip
+#   read (deliberately lock-free, see its module docstring), so a game
+#   that plays SD-backed audio while the engine ticks must still stop
+#   the engine first -- see games/bakery/game.py's _handle_tap().
+#   The bus clock is set through the bus's cache-aware set_freq(), so
+#   entering the lock costs a compare, not an spi.init(), when the clock
+#   is already right.
 #
 # BENCH-CONFIRM before trusting output (project rule: panels lie):
 #   RGB565 byte order. The converter below assumes LITTLE-ENDIAN source (asset
@@ -221,17 +231,18 @@ class StripBufferPool:
 class StripRenderer:
     """Cheap-at-rest renderer for ILI9488 illustrated scenes.
 
-    __init__ args (wire to the real firmware objects):
-      spi          -- raw machine.SPI for pixel/command bytes on SPI0
-      cs, dc       -- ILI9488 CS (GP6) and DC (GP12) Pin objects, manual OUT
-      set_bus_freq -- callable(hz): set + ALWAYS re-init the shared bus freq
+    __init__ args:
+      bus     -- the shared drivers.spi_bus.SpiBus: its lock is held for
+                 every strip, its cache-aware set_freq() sets the clock
+      cs, dc  -- ILI9488 CS (GP6) and DC (GP12) Pin objects, manual OUT
     """
 
-    def __init__(self, spi, cs, dc, set_bus_freq):
-        self.spi = spi
+    def __init__(self, bus, cs, dc):
+        self._bus = bus
+        self.spi = bus.spi
         self.cs = cs
         self.dc = dc
-        self.set_bus_freq = set_bus_freq
+        self.set_bus_freq = bus.set_freq   # for blit_sd read_band callbacks
         self._b1 = bytearray(1)        # reused 1-byte scratch, no per-call alloc
         # transmit-seam state (used by the DMA impl later)
         self._tx_evt = asyncio.Event()
@@ -299,13 +310,12 @@ class StripRenderer:
     # No SD strip needed -- convert straight from the big buffer at each band
     # offset. DMA overlaps convert(N+1) with the transmit of band N via the
     # 666 ping-pong; in the blocking build it's serial (correct, just no
-    # parallelism). Assumes bus already at DISPLAY_FREQ.
+    # parallelism). Holds the bus lock at DISPLAY_FREQ for the whole call.
     #   scene565 : bytes-like, width*rows RGB565, little-endian
     # ======================================================================
     async def blit_ram(self, strips, scene565, y0=0, rows=MAIN_H,
                        x0=0, width=MAIN_W):
-        self.set_bus_freq(DISPLAY_FREQ)
-        try:
+        async with self._bus.raw(DISPLAY_FREQ):
             n_bands = (rows + STRIP_H - 1) // STRIP_H
             cur = 0
             # prime band 0 into wire[0]
@@ -328,8 +338,6 @@ class StripRenderer:
                 await self._wait_transmit()
                 self.cs(1)                                   # end band i
                 cur ^= 1
-        finally:
-            self.set_bus_freq(DISPLAY_FREQ)                  # never stranded
 
     # ======================================================================
     # SD-sourced scene: stream band-by-band from the card.
@@ -343,16 +351,18 @@ class StripRenderer:
     # moves SD to SPI1. The 666 ping-pong still lets DMA overlap convert with
     # transmit within the write phase.
     #
-    # read_band(dst565_mv, band_index, band_rows) -- YOU supply this. It must:
-    #   1. self.set_bus_freq(SD_FREQ)
+    # read_band(dst565_mv, band_index, band_rows) -- YOU supply this. It runs
+    # with the bus lock ALREADY HELD by this method (so never use
+    # spi_bus.raw()/device() inside it -- that would deadlock). It must:
+    #   1. renderer.set_bus_freq(SD_FREQ)
     #   2. read band_rows*width*2 bytes from the open scene file into dst565_mv
     #      (via the mounted SD / vfs -- SD_CS handled by the SD driver)
-    #   3. self.set_bus_freq(DISPLAY_FREQ)   # leave bus ready for transmit
+    #   3. renderer.set_bus_freq(DISPLAY_FREQ)   # leave bus ready for transmit
     # It MUST return with the bus at DISPLAY_FREQ.
     # ======================================================================
     async def blit_sd(self, strips, read_band, y0=0, rows=MAIN_H,
                       x0=0, width=MAIN_W):
-        try:
+        async with self._bus.raw(DISPLAY_FREQ):
             n_bands = (rows + STRIP_H - 1) // STRIP_H
             cur = 0
             for i in range(n_bands):
@@ -370,5 +380,3 @@ class StripRenderer:
                 await self._wait_transmit()
                 self.cs(1)                                   # end band i
                 cur ^= 1
-        finally:
-            self.set_bus_freq(DISPLAY_FREQ)                  # never stranded

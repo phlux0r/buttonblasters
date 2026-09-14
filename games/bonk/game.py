@@ -453,13 +453,13 @@ class StarBonkGame(BaseGame):
         # pulse — no SPI0) can safely overlap the next target's render.
         # Audio is AWAITED, not fire-and-forget: correct.wav most likely
         # resolves via the /sd/audio/sfx/ fallback (no Tier B audio baked
-        # for this game yet), and SD shares the SPI0 bus with the displays.
-        # A fire-and-forget clip's SD file read could previously overlap
-        # the NEXT target's sprite_engine render, which also writes SPI0
-        # without spi_bus's lock (accepted for Bonk only on the assumption
-        # everything in this loop stays sequential — see HARDWARE_NOTES.md)
-        # — two unlocked SPI0 writers racing, confirmed on hardware as
-        # screen tearing right when the next target appeared.
+        # for this game yet), and drivers/audio.py reads the card WITHOUT
+        # the SPI0 bus lock by design. The sprite engine's render now holds
+        # that lock per strip, but a lock can't protect against a reader
+        # that never takes it — so a fire-and-forget clip's SD read could
+        # still overlap the NEXT target's render (confirmed on hardware as
+        # screen tearing right when the next target appeared, back when
+        # neither side locked). Awaiting the clip keeps them sequential.
         if self.leds and self.leds.ready:
             self.leds.start_effect(self.leds.correct_flash())
         if haptic.ready:

@@ -201,7 +201,7 @@ await display.draw_btn_border(i, color, thickness) / draw_score(score) / draw_pr
 
 `paint_*_bg()` streams through the display scratch arena by default (never the shared `flash_assets.arena`), so a game's resident sprites are safe. Games can borrow that same arena for short-lived decodes with `seat_bg_scratch()`.
 
-For animated main-screen scenes, use `SpriteEngine` + `MainScreenAdapter` (see `games/bonk` for one-shot repaints and `games/bakery` for a continuous tick loop). Note that the engine's renderer writes SPI0 **without** taking the bus lock, so stop the engine before any other draw or SD-backed audio while it is running.
+For animated main-screen scenes, use `SpriteEngine` + `MainScreenAdapter` (see `games/bonk` for one-shot repaints and `games/bakery` for a continuous tick loop). The renderer holds the SPI0 bus lock for every strip it pushes, so other display draws simply queue behind it. The one exception is SD-backed audio, which reads the card without the lock by design: stop the engine before playing a clip that may resolve from `/sd/audio/`, or bake the clip as Tier B audio for the game.
 
 ---
 

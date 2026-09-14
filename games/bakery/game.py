@@ -12,23 +12,17 @@
 # ENGINEERING NOTE — first game to use SpriteEngine.start()'s CONTINUOUS
 # tick loop (every other game either doesn't animate the main screen, or
 # like Star Bonk!, only calls render_dirty() once per discrete spawn/
-# despawn). documents/HARDWARE_NOTES.md flags this combination explicitly
-# as an unreasoned-through hazard: audio that resolves via the SD-card
-# fallback shares SPI0 with the display, and a fire-and-forget audio call
-# racing the engine's background render tick caused real screen tearing in
-# Bonk (fixed there by awaiting the clip instead). This file originally
-# assumed the same fix (every audio call awaited with wait=True) would be
-# enough here too -- it isn't, and hardware confirmed it: Bonk never runs
-# a CONTINUOUS background tick concurrently with anything, so awaiting a
-# clip in Bonk's own coroutine really did mean nothing else was touching
-# SPI0 at the same time. Bakery's belt tick runs on its OWN asyncio task
-# via engine.start(), the whole round -- awaiting a clip in _handle_tap()
-# only pauses THAT coroutine, not the separate task still ticking (and
-# drawing) concurrently. The actual fix is in _handle_tap(): explicitly
-# await self._engine.stop() before any audio in there, engine.start()
-# again after. Every per-game clip (voice names + recipe intros) should
-# still be baked/installed as Tier B audio for this game (not left to the
-# SD fallback) so the fast path is used regardless.
+# despawn). That tick runs on its OWN asyncio task the whole round, so
+# anything else touching SPI0 runs concurrently with it. The strip
+# renderer now holds the shared bus lock for every strip it pushes
+# (drivers/strip_renderer.py, BUS LOCKING), so button-screen fills and
+# locked SD reads simply queue behind it -- the old tearing across every
+# screen on each cue is fixed at the source. The one thing the lock can't
+# cover is audio that resolves via the /sd/audio fallback: drivers/
+# audio.py reads the card WITHOUT the lock by design (bracketing every
+# chunk was audible as stutter), so _handle_tap() still stops the engine
+# around its audio cues. Bake every per-game clip (voice names + recipe
+# intros) as Tier B audio so the lock-free SD read is never the path used.
 #
 # MEMORY NOTE — the ingredient pool is 10 items, but flash_assets.arena is
 # a shared 96KB bump arena and each 96x96 LE sprite is ~18.4KB — all 10 of
@@ -603,16 +597,14 @@ class MagicBakeryGame(BaseGame):
         slot_idx = self._first_empty_slot()
 
         # Pause the belt's continuous background tick for every audio cue
-        # below (including show_wrong()'s). SpriteEngine.start() keeps
-        # ticking -- and touching SPI0 to redraw the main screen -- on its
-        # OWN asyncio task the whole time; awaiting a clip in THIS
-        # coroutine (as the module docstring originally assumed, following
-        # Bonk's fix for a similar issue) does nothing to stop that OTHER
-        # task's concurrent SPI0 use. Bonk never has this problem because
-        # it never runs a continuous background tick concurrently with
-        # anything; Bakery is the first game that does. Confirmed on
-        # hardware as tearing across every screen, button screens
-        # included, on every correct/wrong cue.
+        # below (including show_wrong()'s). The engine holds the SPI0 bus
+        # lock per strip, but a clip that resolves via /sd/audio is read
+        # WITHOUT that lock (drivers/audio.py, deliberate), so the only way
+        # to keep an SD-backed clip's card reads off the bus while the belt
+        # tick is pushing strips is to not be ticking. Confirmed on
+        # hardware as tearing across every screen on every cue before
+        # this. (The button fill in _on_button_press() no longer needs
+        # this: it takes the lock and queues behind the strip in flight.)
         await self._engine.stop()
         try:
             if slot_idx is None:
@@ -676,19 +668,12 @@ class MagicBakeryGame(BaseGame):
     async def _on_button_press(self, idx):
         slot = self._slots[idx]
         if slot is not None and not slot["correct"]:
-            # Same SPI0 race as the audio fix in _handle_tap(), different
-            # trigger: the button screens and the main screen share ONE
-            # physical SPI bus (drivers/spi_bus.py has a single self.spi),
-            # just different CS lines. SpriteEngine.start() keeps ticking
-            # -- and writing to that bus for the main screen -- on its own
-            # asyncio task the whole round, so a button-screen fill here
-            # can land mid-transfer of a belt repaint and tear either (or
-            # both) screens. Same fix: pause the engine around the draw.
-            await self._engine.stop()
-            try:
-                await self._paint_slot_empty(idx)
-            finally:
-                self._engine.start(tick_ms=BELT_TICK_MS)
+            # No engine pause needed: this button-screen fill and the belt
+            # tick's strip pushes both take the SPI0 bus lock, so the fill
+            # just waits for the strip in flight (~2ms) instead of tearing
+            # it. Only SD-backed audio, which bypasses the lock by design,
+            # still needs the engine stopped -- see _handle_tap().
+            await self._paint_slot_empty(idx)
 
     def _update_progress_leds(self, collected_n, needed_n):
         if not (self.leds and self.leds.ready):
