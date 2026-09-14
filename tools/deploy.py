@@ -16,13 +16,20 @@ them at game load:
   main.py, config.py,           /            (main.py always stays .py)
   sdcard.py, rgb666_viper.py
   drivers/, core/, games/       /drivers, /core, /games
-  assets/menu/                  /assets/menu      (Tier A — permanent)
+  assets/menu/btn_{again,back,  /assets/menu      (Tier A — permanent:
+    next,prev}_*.bz                                 the shared nav tiles)
   assets/sys/                   /assets/sys       (Tier A — permanent)
   assets/static/                /assets/static     (Tier A — permanent,
                                                      mirrored as-is)
 
   repo                          SD card
   ----                          -------
+  assets/menu/bgm_menu-*.bz,    /sd/assets/menu   (streamed strip-by-strip
+  assets/menu/btn_menu-*.bz                        from the card by
+                                                   game_cache.open_background's
+                                                   SD fallback -- ~1MB of
+                                                   per-game menu art that
+                                                   used to fill half of flash)
   assets/match/bgm_*.bz         /sd/assets/match  (Tier B — game_cache
   (everything else under a      installs to /assets/<id> at game load)
    per-game assets/<id>/ folder,
@@ -66,6 +73,33 @@ ROOT_FILES = ["main.py", "config.py", "sdcard.py", "rgb666_viper.py"]
 PACKAGES   = ["drivers", "core", "games"]
 
 
+# Per-game menu art lives on the SD card (see stage()); everything else in
+# assets/menu is a shared tile that stays on flash.
+PER_GAME_MENU_PREFIXES = ("bgm_menu-", "btn_menu-")
+
+
+def _is_per_game_menu_art(name):
+    return name.startswith(PER_GAME_MENU_PREFIXES)
+
+
+# Stale per-game menu art left on littlefs by deploys from before the split
+# would shadow the SD copies (open_background tries flash first) AND keep
+# hogging ~870KB -- remove it on every install, in one exec (each separate
+# mpremote command is its own connect + soft reset, so not one rm per file).
+_RM_STALE_MENU_ART = (
+    "import os\n"
+    "try:\n"
+    "    names = os.listdir('/assets/menu')\n"
+    "except OSError:\n"
+    "    names = []\n"
+    "for n in names:\n"
+    "    if n.startswith(%r):\n"
+    "        os.remove('/assets/menu/' + n)\n"
+    "        print('removed stale flash copy:', n)\n"
+    % (PER_GAME_MENU_PREFIXES,)
+)
+
+
 def stage():
     if BUILD.exists():
         shutil.rmtree(BUILD)
@@ -83,7 +117,20 @@ def stage():
     # subfolder per game) -- mirrored wholesale, no filename sniffing
     # needed here any more; that used to happen in this script, now it
     # happens once, by hand, when art is baked (see tools/bake_assets.py).
-    shutil.copytree(REPO / "assets" / "menu", STAGE_FW / "assets" / "menu")
+    #
+    # assets/menu is SPLIT: the shared nav tiles (Again/Back/Next/Prev,
+    # ~220KB, used by every game's end screen) stay on flash; the per-game
+    # cards and tiles (bgm_menu-*/btn_menu-*, ~870KB and growing ~220KB per
+    # new game) go to the SD card, where core/game_cache.open_background's
+    # SD fallback streams them strip-by-strip. Measured: the cards compress
+    # only ~2:1 and were half of all flash in use.
+    (STAGE_FW / "assets" / "menu").mkdir(parents=True)
+    (STAGE_SD / "assets" / "menu").mkdir(parents=True)
+    for f in sorted((REPO / "assets" / "menu").iterdir()):
+        if not f.is_file():
+            continue
+        dest = STAGE_SD if _is_per_game_menu_art(f.name) else STAGE_FW
+        shutil.copy2(f, dest / "assets" / "menu" / f.name)
     shutil.copytree(REPO / "assets" / "sys",  STAGE_FW / "assets" / "sys")
     static_src = REPO / "assets" / "static"
     if static_src.is_dir():
@@ -137,6 +184,7 @@ def mpremote(port, *args):
 def install(port, push_sd):
     for child in sorted(STAGE_FW.iterdir()):
         mpremote(port, "cp", "-r", str(child), ":")
+    mpremote(port, "exec", _RM_STALE_MENU_ART)
     if push_sd:
         # /sd is only the real SD card if main.py's own boot sequence
         # already ran far enough to mount it (core/kernel.py step 7) --

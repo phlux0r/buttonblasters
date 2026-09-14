@@ -43,6 +43,12 @@ def _walk_sd(dirpath):
     except OSError:
         return
     for name in names:
+        if name.startswith("."):
+            # macOS Finder litters a FAT card with AppleDouble '._foo'
+            # twins and .DS_Store/.Spotlight-V100/.Trashes; mirroring them
+            # to littlefs would silently eat the flash this tier is meant
+            # to conserve. Nothing of ours is ever dot-prefixed.
+            continue
         full = dirpath + "/" + name
         if _is_dir(full):
             for item in _walk_sd(full):

@@ -80,7 +80,7 @@ buttonblasters/
 │
 ├── assets/                  # Baked .bz/.sz assets checked into the repo
 │   ├── sys/                 # Boot splash, "no SD" card            (Tier A, littlefs)
-│   ├── menu/                # Menu cards/tiles, prev/next/back/again (Tier A, littlefs)
+│   ├── menu/                # Shared nav tiles → littlefs; per-game cards/tiles → SD (streamed)
 │   ├── static/<game>/       # Per-game sprites, always resident    (Tier A, littlefs)
 │   └── <game>/              # Per-game backgrounds                 (Tier B, SD → littlefs at load)
 ├── audio/                   # Shared WAV clips (sfx/, voice/) — copied to the SD card by hand
@@ -228,13 +228,15 @@ python3 tools/verify_bake.py art/spr_x.png assets/static/x/spr_x.sz   # colour-k
 
 ### Tiers
 
-- **Tier A** (`assets/sys`, `assets/menu`, `assets/static/<game>`): permanent residents on littlefs. Small sprites and menu art. About 0.8 MB of the 4 MB flash remains for this tier.
+- **Tier A** (`assets/sys`, the shared Again/Back/Next/Prev tiles in `assets/menu`, `assets/static/<game>`): permanent residents on littlefs. Small sprites and system art.
+- **Per-game menu art** (`assets/menu/bgm_menu-*`, `btn_menu-*`): pushed to `/sd/assets/menu/` by `deploy.py --sd` and streamed from the card strip by strip whenever the carousel shows them. They compress only ~2:1 and were half of all flash in use; each new game adds about 220 KB, so they never go on flash.
 - **Tier B** (`assets/<game>/`): large backgrounds. Deployed to the SD card at `/sd/assets/<game>/` and copied to littlefs `/assets/<game>/` by `core/game_cache.py` when the game loads, then deleted at unload. Files that don't fit are streamed strip-by-strip from SD instead.
 
 ### SD Card Layout
 
 ```
 /sd/
+  assets/menu/             ← per-game menu cards and tiles (pushed by deploy.py --sd)
   assets/<game_id>/        ← Tier B backgrounds (pushed by deploy.py --sd)
   assets/<game_id>/audio/  ← optional per-game clips (installed with Tier B)
   audio/sfx/               ← shared sound effects  (copy from repo audio/sfx/)
