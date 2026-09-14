@@ -17,7 +17,8 @@ import gc
 import json
 import time
 
-from core.display_manager import display, rgb, warm_text_scratch
+from core.display_manager import (display, rgb, warm_text_scratch,
+                                  seat_bg_scratch)
 from core.menu import Menu
 from core.game_base import GameResult
 from core.settings import load_volume
@@ -53,31 +54,31 @@ class AppKernel:
         # 1. Displays
         display.init_all()
 
-        # 1a-pre0. Seat Bonk's scratch arena FIRST of everything, before
-        # even the blit scratch below. History: this WAS boot-seated, but
-        # positioned LAST among five boot reservations — failed there
-        # ("blew the boot budget", see games.bonk.game._scratch_arena's
-        # comment), so it got reverted to lazy seating at load() time
-        # instead. Lazy seating then ALSO failed, repeatedly, on real
-        # hardware after playing Match first: three retries showed free
-        # heap RISING each time (56208 -> 110816 -> 124528) while the exact
-        # same 32768-byte request kept failing regardless — proof this
-        # isn't a shortage, it's permanent fragmentation from the OTHER
-        # boot-seated blocks (persistent strip pool, flash_assets.arena,
-        # text scratch) acting as fixed, non-moving walls (MicroPython's GC
-        # doesn't compact) that happen to leave no single gap >= 32KB, no
-        # matter how much unrelated garbage gets collected. So: back to
-        # boot-time seating, but FIRST this time instead of last, so it
-        # claims its 32KB while the heap is most virgin, before the larger
-        # reservations below get a chance to wall it in. If flash_assets.init()
-        # (96KB, the single biggest block) fails after this reorder, that's
-        # the checkpoint print to watch — it would mean total capacity, not
-        # ordering, is the real ceiling, and the next lever would be
-        # shrinking something's SIZE (SPRITE_BUDGET or STRIP_H), not
-        # reordering further.
-        from games.bonk.game import seat_scratch_arena
-        seat_scratch_arena()
-        print(f"[kernel] heap after bonk scratch arena: free={gc.mem_free()}")
+        # 1a-pre0. Seat the display scratch arena (32KB — paint_main_bg/
+        # paint_btn_bg's strip buffer, also borrowed by games for transient
+        # icon decodes) FIRST of everything, before even the blit scratch
+        # below. History (from when this arena still lived in
+        # games/bonk/game.py): it WAS boot-seated, but positioned LAST
+        # among five boot reservations — failed there ("blew the boot
+        # budget"), so it got reverted to lazy seating at load() time.
+        # Lazy seating then ALSO failed, repeatedly, on real hardware after
+        # playing Match first: three retries showed free heap RISING each
+        # time (56208 -> 110816 -> 124528) while the exact same 32768-byte
+        # request kept failing regardless — proof this isn't a shortage,
+        # it's permanent fragmentation from the OTHER boot-seated blocks
+        # (persistent strip pool, flash_assets.arena, text scratch) acting
+        # as fixed, non-moving walls (MicroPython's GC doesn't compact)
+        # that happen to leave no single gap >= 32KB, no matter how much
+        # unrelated garbage gets collected. So: boot-time seating, FIRST,
+        # so it claims its 32KB while the heap is most virgin, before the
+        # larger reservations below get a chance to wall it in. If
+        # flash_assets.init() (96KB, the single biggest block) fails after
+        # this, that's the checkpoint print to watch — it would mean total
+        # capacity, not ordering, is the real ceiling, and the next lever
+        # would be shrinking something's SIZE (SPRITE_BUDGET or STRIP_H),
+        # not reordering further.
+        seat_bg_scratch()
+        print(f"[kernel] heap after display scratch arena: free={gc.mem_free()}")
 
         # 1a-pre. Pre-warm the ILI9488's own full-width blit scratch buffer
         # (23,040B) BEFORE anything else claims heap. Confirmed on hardware

@@ -136,6 +136,33 @@ def _render_text_be(text, color, bg, scale, bold):
     _scale_text_be(base, sw, sh, out, dw, scale, b, bg)
     return memoryview(out)[:dw * dh * 2], dw, dh
 
+# ── Background / tile scratch arena ──────────────────────────────
+# paint_main_bg()/paint_btn_bg() stream a .bz background one strip at a
+# time through a scratch buffer. That buffer used to be borrowed from the
+# SHARED flash_assets.arena by default, and since these paints reset()
+# whatever arena they're handed, any game keeping sprites resident in the
+# shared arena (Star Bonk!) had them overwritten by its own end-screen
+# paints — confirmed on hardware as wizard/goblin corruption on "Play
+# Again". The default is now this dedicated arena: seated once at boot by
+# core/kernel.py (FIRST of the heap reservations — see the history there
+# for why it must be first) and never freed. Sized for the largest strip
+# either paint path ever asks for (a 480-wide kind-1 background at 32
+# rows = 30,720B) with headroom; games may borrow it for transient decodes
+# too (a 96x96 BE legend icon = 18,432B) via seat_bg_scratch().
+_BG_SCRATCH_BYTES = 32 * 1024
+_bg_scratch = None
+
+
+def seat_bg_scratch():
+    """Seat the display scratch arena once (idempotent) and return it.
+    Called at boot by core/kernel.py; games call it to borrow the arena
+    for short-lived decodes that must not touch flash_assets.arena."""
+    global _bg_scratch
+    if _bg_scratch is None:
+        _bg_scratch = flash_assets.SpriteArena(_BG_SCRATCH_BYTES)
+    return _bg_scratch
+
+
 class DisplayManager:
 
     def __init__(self):
@@ -211,20 +238,11 @@ class DisplayManager:
         asset to be a full-screen image.
 
         arena: bump-arena to borrow the per-strip scratch buffer from.
-        Defaults to the shared flash_assets.arena, which is safe for
-        transient callers (Match It!'s per-round icon reloads, the menu,
-        the boot splash) that don't rely on anything else still being
-        resident there. Pass your OWN persistent arena if your game keeps
-        other data resident in the shared arena across this call —
-        confirmed on hardware as real memory corruption otherwise: Star
-        Bonk keeps its 4 main-screen sprite sheets seated in
-        flash_assets.arena for the whole game session, and this method's
-        unconditional arena.reset()+alloc() (from its own end-screen tile/
-        result paints) was resetting that SAME arena and overwriting the
-        sprites at its START — wizard and goblin (loaded first, in
-        TARGETS order) got corrupted on the second "Play Again" onward;
-        star and mushroom (loaded later, at higher offsets) escaped."""
-        a = arena if arena is not None else flash_assets.arena
+        It is reset() before and after the paint, so never pass an arena
+        holding anything you still need. Defaults to the display scratch
+        arena (seat_bg_scratch() above) — never the shared
+        flash_assets.arena, so a game's resident sprites are safe."""
+        a = arena if arena is not None else seat_bg_scratch()
         bg = None
         try:
             bg = game_cache.open_background(path)
@@ -251,10 +269,9 @@ class DisplayManager:
         idx, one strip at a time via an arena-borrowed buffer. Returns True if
         painted, False on any error (caller supplies the fallback).
 
-        arena: see paint_main_bg() — same shared-arena-corruption hazard,
-        same fix (pass your own persistent arena if you keep other data
-        resident in the shared one)."""
-        a = arena if arena is not None else flash_assets.arena
+        arena: see paint_main_bg() — defaults to the display scratch
+        arena, is reset() around the paint."""
+        a = arena if arena is not None else seat_bg_scratch()
         bg = None
         try:
             bg = game_cache.open_background(path)

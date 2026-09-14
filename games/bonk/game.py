@@ -60,7 +60,8 @@ import asyncio
 import random
 import config
 from core.game_base import BaseGame, GameResult, shuffle
-from core.display_manager import rgb, WHITE, RED, GREEN, BLUE, YELLOW, DARK, BLACK
+from core.display_manager import (rgb, WHITE, RED, GREEN, BLUE, YELLOW, DARK,
+                                  BLACK, seat_bg_scratch)
 from core import game_cache
 from core.sprite_engine import SpriteEngine, STRIP_H
 from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
@@ -120,76 +121,6 @@ REPLAY_TILE_PATH = "/assets/menu/btn_again_280x240.bz"   # shared across games -
                                                           # the same "Again" tile
                                                           # every game uses now
 BACK_TILE_PATH   = "/assets/menu/btn_back_280x240.bz"        # shared across games
-
-# Module-level, seated ONCE per power-on session (not re-allocated every
-# game load()) -- the same fix already proven for flash_assets.arena, and
-# flagged-but-not-yet-needed for the strip buffer pool in strip_renderer.py.
-# Confirmed on hardware: a SECOND Bonk session (menu -> Bonk -> menu ->
-# Bonk again) failed "memory allocation failed, allocating 20480 bytes" --
-# exactly this arena's size -- even though the much larger strip pool had
-# already seated fine moments earlier in that same load(). The leftover
-# free space after THAT carve was scattered into fragments all under 20KB;
-# gc.collect() reclaims dead objects but this non-compacting GC doesn't
-# defragment, so a fresh alloc+free of this arena every session accumulates
-# exactly the same failure mode already documented for the strip pool.
-# Seating it once and only .reset()-ing (a bump-pointer rewind, not a new
-# allocation) thereafter means it's carved out before any per-session churn
-# exists, and it can never need to seat into a fragmented heap again.
-#
-# Dual purpose (renamed from _legend_arena): also used by _end_screen() to
-# paint BACK_TILE_PATH/REPLAY_TILE_PATH/RESULT_PATH via paint_btn_bg()/
-# paint_main_bg()'s arena= param, instead of letting those calls fall back
-# to the SHARED flash_assets.arena. Confirmed on hardware as real memory
-# corruption otherwise: this game's 4 main-screen sprite sheets (wizard/
-# goblin/star/mushroom) live in flash_assets.arena for the whole session
-# (see load()), and paint_main_bg/paint_btn_bg unconditionally reset+
-# reallocate whatever arena they're given -- every "Play Again" ran
-# _end_screen(), which reset the SHARED arena and overwrote the sprites
-# sitting at its start. wizard and goblin (loaded first, in TARGETS
-# order) got clobbered from the second playthrough onward; star and
-# mushroom (loaded later, at higher offsets) were never reached by the
-# ~19-30KB strip buffers _end_screen() was allocating. Sized to fit the
-# largest single strip request across BOTH uses (one legend icon, 96x96
-# BE = 18,432B; RESULT_PATH's 480-wide strip = 30,720B), never both at
-# once -- legend icons are only read during round play, end-screen tiles
-# only after a round-set finishes.
-#
-# Seated at BOOT again, but FIRST among the boot-time reservations this
-# time (core/kernel.py calls seat_scratch_arena() before even the blit
-# scratch/strip pool/flash_assets.arena/text scratch). History, in order:
-#   1. Originally lazy-seated on first load() only.
-#   2. Moved to boot (seated LAST of five reservations) after lazy seating
-#      failed even on a session's first Bonk load -- fixed that.
-#   3. That broke BOOT ITSELF: by the time this ran last, ~193KB was
-#      already committed to the other four reservations, and this arena's
-#      32KB request couldn't fit anywhere -- worse than the bug it fixed,
-#      since a boot failure blocks every game, not just Bonk. Reverted to
-#      lazy seating at load() again.
-#   4. Lazy seating failed AGAIN on real hardware, repeatedly, after
-#      playing Match first: free heap RISING each retry (56208 -> 110816
-#      -> 124528) while the exact same 32768-byte request kept failing
-#      regardless -- proof of permanent fragmentation (the other boot-
-#      seated blocks act as fixed, non-moving walls a non-compacting GC
-#      can't route around), not a shortage no amount of gc.collect()
-#      elsewhere could ever fix.
-#   5. Back to boot-time seating, but reordered FIRST instead of last, so
-#      it claims its 32KB on the most virgin heap available, before the
-#      larger reservations get a chance to wall it in. See the ordering
-#      comment in core/kernel.py's init() for what to watch if this also
-#      fails (whether flash_assets.init()'s 96KB block starts failing
-#      instead would mean total capacity, not ordering, is the real limit).
-_scratch_arena = None
-
-
-def seat_scratch_arena():
-    """Seat _scratch_arena once. Called from core/kernel.py at boot, FIRST
-    among the boot-time heap reservations -- see the module comment above
-    for the full back-and-forth on why. load() below also calls this as a
-    defensive fallback. Idempotent -- a no-op if already seated."""
-    global _scratch_arena
-    if _scratch_arena is None:
-        _scratch_arena = flash_assets.SpriteArena(32 * 1024)
-
 
 def _main_asset_path(name):
     return "%sspr_%s_%dx%dx1.sz" % (ASSET_DIR, name, ICON, ICON)
@@ -300,18 +231,14 @@ class StarBonkGame(BaseGame):
                 print("[bonk] main sprite load failed:", name, e)
                 self._sheets[name] = None
 
-        # Small SEPARATE arena for the button-legend icons AND the
-        # end-screen tile/result paints (BE, opaque) — kept apart from the
-        # global arena because that one holds the LE sprites for the whole
-        # game and arena.reset() is all-or-nothing. Lazily seated HERE (see
-        # module-level _scratch_arena comment for why boot-time seating was
-        # tried and reverted) — only the FIRST Bonk load of a session
-        # actually allocates; every load after that just rewinds the
-        # existing arena's bump pointer via .reset().
-        global _scratch_arena
-        seat_scratch_arena()
-        _scratch_arena.reset()
-        self._scratch_arena = _scratch_arena
+        # Button-legend icons (BE, opaque) decode into the display
+        # manager's boot-seated scratch arena — NOT the shared
+        # flash_assets.arena above, which holds this game's LE sprites for
+        # the whole session and whose reset() is all-or-nothing.
+        # paint_main_bg()/paint_btn_bg() default to that same scratch
+        # arena, so the end-screen paints can't clobber the sprites either.
+        self._scratch_arena = seat_bg_scratch()
+        self._scratch_arena.reset()
 
         try:
             bg = game_cache.open_background(BOARD_PATH)
@@ -595,12 +522,7 @@ class StarBonkGame(BaseGame):
         score_str = "%d pts" % self.score
         stars     = self._stars_for(self.score)
         star_str  = ("*" * stars) + ("-" * (3 - stars))
-        # arena=self._scratch_arena on every paint_*_bg call below — NOT the
-        # default shared flash_assets.arena, which still holds this game's
-        # 4 persistent main-screen sprite sheets (see load()). Using the
-        # default here was the exact cause of the wizard/goblin corruption
-        # bug: see the module-level _scratch_arena comment for the full story.
-        if await self.display.paint_main_bg(RESULT_PATH, arena=self._scratch_arena):
+        if await self.display.paint_main_bg(RESULT_PATH):
             ssx = config.MAIN_W // 2 - len(score_str) * 8
             await self.display.text_main(
                 score_str, ssx, RESULT_SCORE_Y, 0xEA16, WHITE, scale=2)
@@ -614,10 +536,10 @@ class StarBonkGame(BaseGame):
             await self.display.text_main(   # below show_splash's subtitle line
                 star_str, stx, 172, YELLOW, rgb(10, 60, 20), scale=3)
 
-        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH, arena=self._scratch_arena):
+        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
             await self._show_back_fallback(3)
         for idx in (0, 1, 2):
-            if not await self.display.paint_btn_bg(idx, REPLAY_TILE_PATH, arena=self._scratch_arena):
+            if not await self.display.paint_btn_bg(idx, REPLAY_TILE_PATH):
                 await self._show_replay_fallback(idx)
 
         # All drawing done — now the cheer, so playback doesn't overlap any

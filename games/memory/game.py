@@ -163,17 +163,10 @@ class ButtonMemoryGame(BaseGame):
 
     # ── Icon setup ───────────────────────────────────────────────
     # Each icon is decoded from flash and discarded on every call -- NOT
-    # cached across draws. A cached frame would sit in flash_assets.arena
-    # (the shared arena) indefinitely, and _end_screen()'s paint_main_bg()/
-    # paint_btn_bg() calls for RESULT_PATH/BACK_TILE_PATH/AGAIN_TILE_PATH
-    # reset+reuse that SAME shared arena by default -- silently overwriting
-    # a cached frame with unrelated pixel data the next time "Play Again"
-    # repaints the buttons. This is the exact "wizard/goblin corruption on
-    # Play Again" bug already documented on core/display_manager.py's
-    # paint_main_bg() -- Star Bonk! avoids it with its own dedicated
-    # _scratch_arena; we avoid it here by simply never keeping a frame
-    # around long enough to be corrupted. Four ~18KB flash decodes per
-    # "Play Again" is cheap and only happens once per replay, not per round.
+    # cached across draws. Nothing else in this game needs the shared
+    # flash_assets.arena, and four ~18KB flash decodes per "Play Again"
+    # is cheap (once per replay, not per round), so there's no reason to
+    # keep frames resident.
 
     async def _paint_base(self, idx):
         """Decode button idx's icon fresh from flash and draw it + a

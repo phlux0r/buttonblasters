@@ -42,12 +42,10 @@
 # every time, exactly like games/memory/game.py's icons — see that file's
 # comment for why caching them in the shared arena would risk the same
 # "wizard/goblin corruption on Play Again" bug this project already hit
-# once. A small scratch arena handles button icons + the recipe/baked
-# card + end-screen paints, kept separate from the shared arena that holds
-# the round's persistent LE belt sprites -- this is literally Star Bonk!'s
-# own already-boot-seated _scratch_arena, reused rather than a second one
-# of Bakery's own (see the load() comment for why: a second lazy 32KB
-# allocation hit the exact fragmentation failure Bonk's already fought).
+# once. Button icons, the recipe/baked cards and the end-screen paints
+# all go through core/display_manager.py's boot-seated scratch arena,
+# kept separate from the shared arena that holds the round's persistent
+# LE belt sprites.
 #
 # LAYOUT — main screen is 480x320. The recipe card (280x169) sits at
 # (x=100, y=15), matching the pre-composed frame baked into the board art;
@@ -110,14 +108,14 @@ import asyncio
 import random
 import config
 from core.game_base import BaseGame, GameResult, shuffle
-from core.display_manager import rgb, WHITE, RED, GREEN, BLUE, YELLOW, DARK, BLACK
+from core.display_manager import (rgb, WHITE, RED, GREEN, BLUE, YELLOW, DARK,
+                                  BLACK, seat_bg_scratch)
 from core import game_cache
 from core.sprite_engine import SpriteEngine, STRIP_H
 from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
 from drivers import flash_assets
 from drivers.touch import TOUCH_TAP
 from drivers.haptic import haptic
-import games.bonk.game as _bonk
 
 # ── Content ──────────────────────────────────────────────────────
 INGREDIENTS = ("flour", "egg", "sugar", "butter", "milk", "chocolate",
@@ -304,22 +302,14 @@ class MagicBakeryGame(BaseGame):
         self._adapter = MainScreenAdapter(make_main_strip_renderer())
         self._adapter.open()
 
-        # Small scratch arena for button icons + card/end-screen paints --
-        # kept separate from flash_assets.arena, which holds the round's
-        # persistent LE belt sprites. This USED to lazy-allocate its own
-        # 32KB SpriteArena here, and that hit exactly the fragmentation
-        # failure Bonk's own arena already fought and lost to once (see
-        # games/bonk/game.py's module comment): "heap before bakery.load():
-        # free=68176" / "allocating 32768 bytes" failed anyway -- plenty of
-        # free heap, no single 32KB gap, because the other boot-seated
-        # blocks (strip pool, flash_assets.arena, text scratch) are fixed
-        # non-moving walls a non-compacting GC can't route around. Rather
-        # than fight for a SECOND boot-time 32KB reservation (real risk of
-        # blowing the boot budget instead -- see core/kernel.py's ordering
-        # comment), just reuse Bonk's already boot-seated one: only one
-        # game runs at a time, so nothing else needs it while Bakery does.
-        _bonk.seat_scratch_arena()
-        self._scratch_arena = _bonk._scratch_arena
+        # Button icons decode into the display manager's boot-seated scratch
+        # arena (never the shared flash_assets.arena, which holds the
+        # round's LE belt sprites). A second lazily-allocated 32KB arena of
+        # Bakery's own was tried and hit the fragmentation failure Bonk's
+        # arena had already fought ("free=68176" yet "allocating 32768
+        # bytes" failed) — one boot-seated arena shared by every game is
+        # the fix, since only one game runs at a time.
+        self._scratch_arena = seat_bg_scratch()
 
         try:
             bg = game_cache.open_background(BOARD_PATH)
@@ -446,7 +436,7 @@ class MagicBakeryGame(BaseGame):
         await self._engine.render_dirty()
 
         if not await self.display.paint_main_bg(
-                RECIPE_CARD_PATH % recipe, arena=self._scratch_arena,
+                RECIPE_CARD_PATH % recipe,
                 x=CARD_X, y=CARD_Y):
             await self._show_card_fallback(recipe)
 
@@ -529,7 +519,7 @@ class MagicBakeryGame(BaseGame):
         # left to fight over the frame; a plain full-screen paint_main_bg()
         # (default x=0,y=0) is all this needs.
         if await self.display.paint_main_bg(
-                BAKED_CARD_PATH % recipe, arena=self._scratch_arena):
+                BAKED_CARD_PATH % recipe):
             pass
         else:
             await self._show_baked_fallback(recipe)
@@ -797,7 +787,7 @@ class MagicBakeryGame(BaseGame):
         stars = self._stars_for(self.score)
         star_str = ("*" * stars) + ("-" * (3 - stars))
 
-        if await self.display.paint_main_bg(RESULT_PATH, arena=self._scratch_arena):
+        if await self.display.paint_main_bg(RESULT_PATH):
             ssx = config.MAIN_W // 2 - len(score_str) * 8
             await self.display.text_main(
                 score_str, ssx, RESULT_SCORE_Y, 0xEA16, WHITE, scale=2)
@@ -811,10 +801,10 @@ class MagicBakeryGame(BaseGame):
             await self.display.text_main(
                 star_str, stx, 172, YELLOW, rgb(60, 30, 10), scale=3)
 
-        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH, arena=self._scratch_arena):
+        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
             await self._show_back_fallback(3)
         for idx in (0, 1, 2):
-            if not await self.display.paint_btn_bg(idx, AGAIN_TILE_PATH, arena=self._scratch_arena):
+            if not await self.display.paint_btn_bg(idx, AGAIN_TILE_PATH):
                 await self._show_replay_fallback(idx)
 
         await self.announce_round_complete()
