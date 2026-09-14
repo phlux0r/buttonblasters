@@ -1,0 +1,10 @@
+# Desktop tooling for Button Blasters. The firmware itself has no
+# dependencies — it runs on stock MicroPython v1.28 (RPI_PICO2_W build).
+#
+#   pip install -r tools/requirements.txt
+#
+# tools/bake_assets.py additionally needs ffmpeg on PATH.
+
+mpremote>=1.23          # deploy.py, mount_sd.py, device_du.py
+mpy-cross==1.28.*       # deploy.py --mpy and tools/check_compile.py;
+                        # pinned to the device firmware's .mpy version

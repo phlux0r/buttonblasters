@@ -104,7 +104,7 @@ The RP2350 heap is ~450 KB and MicroPython's GC does not compact. The codebase h
 
 | Reservation | Size | Owner |
 |---|---|---|
-| Bonk/Bakery scratch arena | 32 KB | `games/bonk/game.py` |
+| Display scratch arena (bg paints, transient icon decodes) | 32 KB | `core/display_manager.py` |
 | ILI9488 blit scratch (one 16-row RGB666 band) | 23 KB | `drivers/display.py` |
 | Text raster scratch | ~19 KB | `core/display_manager.py` |
 | Strip buffer pool (2× RGB666 + 2× RGB565 strips, `STRIP_H=8`) | ~37 KB | `core/sprite_adapter.py` |
@@ -149,6 +149,8 @@ class MyGame(BaseGame):
         await super().unload()   # stops audio, evicts caches, clears screens
 ```
 
+For a standard "result card + Again/Back tiles" ending, set the `RESULT_*` class attributes and call `await self.show_end_screen(score_str)` — it paints the card, stars, tiles, plays the cheer, and returns `"again"` or `"back"` (with an idle timeout). See `games/memory/game.py` for the shortest example.
+
 **3. Register it** in `games/registry.py`:
 ```python
 _register("games.my_game.game", "MyGame")
@@ -167,10 +169,14 @@ btn = await self.wait_screen_button()       # blocks until btn 0-3 pressed
 btn = await self.wait_any_button()          # any button including BACK (4)
 x, y = await self.wait_tap()                # blocks until screen tap
 btn, evt = await self.wait_tap_or_button()  # either
-await self.check_back()                     # non-blocking: was BACK pressed?
+self.check_back()                           # non-blocking: was BACK pressed? (quits if so)
 self.tap_hit(x, y, (rx, ry, rw, rh))         # rectangle hit test
 
-self.buttons.touch_down / self.buttons.touch_pos   # live finger state (reaction games)
+# Non-blocking, for games that run their own loop (reaction games, belt ticks):
+ev = self.buttons.poll()                    # next (id, event) or None
+self.buttons.take_back_press()              # True if BACK is queued; removes only that event
+self.buttons.pressed_at(btn)                # ticks_ms of the press edge (timestamp gating)
+self.buttons.touch_down / self.buttons.touch_pos   # live finger state
 
 await self.show_correct()     # green LEDs + ding + haptic
 await self.show_wrong()       # red LEDs + buzz
@@ -178,7 +184,7 @@ await self.announce_round_complete()   # "well done" / "new high score" voice li
 await self.wait_or_timeout_back(coro)  # end-screen wait with idle auto-return
 ```
 
-> Reaction games poll `self.buttons._queue.get_nowait()` directly so BACK can be handled mid-loop and presses can be timestamp-gated against `buttons._pressed_at`. See `games/match/game.py` `_wait_answer()`.
+> `check_back()` only ever removes a BACK press from the queue, so it is safe to call alongside your own `poll()` loop. See `games/match/game.py` `_wait_answer()` for timestamp gating with `pressed_at()`.
 
 ### Drawing API
 
@@ -193,7 +199,7 @@ await display.blit_btn_buf(i, be_rgb565_buf, w, h, x, y)
 await display.draw_btn_border(i, color, thickness) / draw_score(score) / draw_progress_bar(pct)
 ```
 
-`paint_*_bg()` resets whatever arena it is given. If your game keeps sprites resident in the shared `flash_assets.arena`, pass your own scratch arena (see `games/bonk/game.py`) or the paint will overwrite them.
+`paint_*_bg()` streams through the display scratch arena by default (never the shared `flash_assets.arena`), so a game's resident sprites are safe. Games can borrow that same arena for short-lived decodes with `seat_bg_scratch()`.
 
 For animated main-screen scenes, use `SpriteEngine` + `MainScreenAdapter` (see `games/bonk` for one-shot repaints and `games/bakery` for a continuous tick loop). Note that the engine's renderer writes SPI0 **without** taking the bus lock, so stop the engine before any other draw or SD-backed audio while it is running.
 
@@ -258,7 +264,8 @@ ffmpeg -i input.mp3 -ar 22050 -ac 1 -acodec pcm_s16le output.wav
 ### Install the Firmware
 
 ```bash
-pip install mpremote            # plus mpy-cross for --mpy
+pip install -r tools/requirements.txt   # mpremote + mpy-cross (pinned to the firmware's .mpy version)
+python3 tools/check_compile.py          # optional: catch syntax errors before flashing
 python3 tools/deploy.py                 # stage into build/ and copy to the Pico
 python3 tools/deploy.py --mpy           # cross-compile to .mpy (smaller, faster import)
 python3 tools/deploy.py --sd            # also mirror Tier B assets onto the mounted SD card
@@ -279,6 +286,7 @@ Format as FAT32. Use a **separate SPI SD breakout**, not the slot on the ILI9488
 | `tools/bake_assets.py` | desktop | PNG → `.bz`/`.sz` baker |
 | `tools/inspect_asset.py` | desktop | Read a baked asset's header, validate against loader rules |
 | `tools/verify_bake.py` | desktop | Compare a baked sprite against its PNG for colour-key fringes |
+| `tools/check_compile.py` | desktop | Cross-compile every module with `mpy-cross` (what CI runs) |
 | `tools/mount_sd.py` | Pico | Force a real SD mount before pushing (used by `deploy.py --sd`) |
 | `tools/device_du.py` | Pico | Per-folder usage on littlefs and SD |
 | `tools/free_space.py` | Pico | Free littlefs space |
@@ -387,7 +395,7 @@ Every game shares the same end-screen convention: result card on main, **Again**
 
 ## 📄 License
 
-MIT — do whatever you like with it. If you build one, share a photo! (A `LICENSE` file still needs adding to the repo.)
+MIT (see [`LICENSE`](LICENSE)) — do whatever you like with it. If you build one, share a photo!
 
 ---
 

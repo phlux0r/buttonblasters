@@ -1,0 +1,22 @@
+name: compile-check
+
+# Cross-compiles every firmware module with mpy-cross (the RP2350 build's
+# .mpy version) and byte-compiles the desktop tools, so a syntax error or a
+# MicroPython-specific parse problem is caught here rather than on the Pico.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tooling
+        run: pip install -r tools/requirements.txt
+      - name: Compile firmware and tools
+        run: python3 tools/check_compile.py -v
