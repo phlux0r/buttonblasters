@@ -50,7 +50,6 @@ from core.game_base import BaseGame, GameResult, shuffle
 from core.display_manager import (rgb, WHITE, YELLOW, RED, GREEN, BLUE,
                                    CYAN, MAGENTA, ORANGE, DARK)
 from drivers import flash_assets
-from drivers.touch import TOUCH_TAP
 
 # ── Content ──────────────────────────────────────────────────────
 ITEMS = {
@@ -82,12 +81,6 @@ _FALLBACK = (RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA)
 
 # ── Background board ─────────────────────────────────────────────
 BOARD_PATH   = "/assets/match/bgm_match_480x320.bz"  # BE, kind 1 (bgm_)
-REPLAY_TILE_PATH = "/assets/menu/btn_again_280x240.bz"  # shared across games --
-                                                          # was btn_menu-match (own
-                                                          # menu tile), switched to
-                                                          # the same "Again" tile
-                                                          # every game uses now
-BACK_TILE_PATH   = "/assets/menu/btn_back_280x240.bz"          # shared across games
 HEADER_COLOR = 0xEA16      # #EB42B5 hot pink, quantized to RGB565
 HEADER_H     = 44          # pink flat zone the prompt+score live in: (0,0,480,44)
 PROMPT_Y     = 24          # prompt y inside the header (score sits at y=4)
@@ -95,16 +88,6 @@ PROMPT_Y     = 24          # prompt y inside the header (score sits at y=4)
 # target tile:  card (120, 104, 240, 152)  ⊃  tile (192, 132, 96, 96).
 INTRO_PATH    = "/assets/match/bgm_intro-%s_480x320.bz"  # % cat; BE, kind 1
 INTRO_HOLD_MS = 400       # extra beat the category card stays up (tunable)
-RESULT_PATH    = "/assets/match/bgm_result_480x320.bz"  # BE, kind 1
-RESULT_SCORE_Y = 120      # score overlay y (scale-4, in the card's flat zone)
-                          # -- one line above RESULT_STARS_Y to make room
-                          # for the star rating underneath
-RESULT_STARS_Y = 148      # star rating overlay y, scale-3, below the score
-RESULT_TIME_GAP = 28      # time/best line's Y offset from RESULT_STARS_Y --
-                          # stars render at scale=3 (24px-tall glyphs), so
-                          # this must clear 24px just to avoid overlapping
-                          # them; +16 (the previous value) didn't, confirmed
-                          # on hardware as the two lines visibly overlapping
 
 
 def _fb_idx(name):
@@ -136,6 +119,11 @@ class ShapeMatchGame(BaseGame):
     MENU_STARS_BG = 0xffff     # WHITE — flat colour of the card's stars zone
     MAX_SCORE     = MAX_SCORE   # module constant (18) — reuses the value
                                 # already used for the "X of 18" end-screen text
+    RESULT_PATH    = "/assets/match/bgm_result_480x320.bz"  # BE, kind 1
+    RESULT_SCORE_Y = 120        # one line above the stars, in the card's flat zone
+    RESULT_STARS_Y = 148
+    RESULT_FALLBACK_TITLE   = "You got"
+    RESULT_FALLBACK_STARS_Y = 168
 
     # ── Lifecycle ────────────────────────────────────────────────
 
@@ -368,18 +356,7 @@ class ShapeMatchGame(BaseGame):
     # ── End screen ────────────────────────────────────────────────
 
     async def _end_screen(self):
-        """Result card + BTN-3 'Back' (bottom-right) / BTN-0,1,2 'Play again'
-        (all three show the same reused tile). No timeout — waits
-        indefinitely for a choice."""
-        try:
-            self.leds.stop_effect()
-        except Exception:
-            pass
-
         score_str = "%d of %d" % (self.score, MAX_SCORE)
-        stars     = self._stars_for(self.score)
-        star_str  = ("*" * stars) + ("-" * (3 - stars))
-
         # Only a perfect round-set has a time worth showing. new_best is
         # compared/updated in-memory here (same pattern as
         # announce_round_complete()'s self.best_score bump) so consecutive
@@ -392,76 +369,5 @@ class ShapeMatchGame(BaseGame):
                 self.best_time_s = self._finish_time_s
             time_str = ("BEST! " if new_best else "TIME ") + \
                 _format_time(self._finish_time_s)
+        return await self.show_end_screen(score_str, extra_line=time_str)
 
-        if await self.display.paint_main_bg(RESULT_PATH):
-            ssx = config.MAIN_W // 2 - len(score_str) * 8
-            await self.display.text_main(
-                score_str, ssx, RESULT_SCORE_Y, 0xEA16, WHITE, scale=2)
-            stx = config.MAIN_W // 2 - len(star_str) * 12   # scale 3 -> char 24, half 12
-            await self.display.text_main(
-                star_str, stx, RESULT_STARS_Y, YELLOW, WHITE, scale=3)
-            if time_str:
-                tx = config.MAIN_W // 2 - len(time_str) * 8
-                await self.display.text_main(
-                    time_str, tx, RESULT_STARS_Y + RESULT_TIME_GAP,
-                    0xEA16, WHITE, scale=2)
-        else:
-            stars_y = 168   # was 172 -- shifted up 4px with the card path
-            await self.display.show_splash(
-                "You got", score_str, bg_color=rgb(10, 60, 20))
-            stx = config.MAIN_W // 2 - len(star_str) * 12
-            await self.display.text_main(   # below show_splash's subtitle line
-                star_str, stx, stars_y, YELLOW, rgb(10, 60, 20), scale=3)
-            if time_str:
-                tx = config.MAIN_W // 2 - len(time_str) * 8
-                await self.display.text_main(
-                    time_str, tx, stars_y + RESULT_TIME_GAP,
-                    YELLOW, rgb(10, 60, 20), scale=2)
-
-        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
-            await self._show_back_fallback(3)
-        for idx in (0, 1, 2):
-            if not await self.display.paint_btn_bg(idx, REPLAY_TILE_PATH):
-                await self._show_replay_fallback(idx)
-
-        # All drawing for this screen is done — now the cheer, so playback
-        # doesn't overlap any SPI writes. This fires once per completed
-        # round-set (all 3 rounds), not at carousel-exit time.
-        await self.announce_round_complete()
-
-        return await self.wait_or_timeout_back(self._wait_end_choice())
-
-    async def _wait_end_choice(self):
-        self.buttons.clear()
-        while True:
-            ev = self.buttons.poll()
-            if ev is None:
-                await asyncio.sleep_ms(20)
-                continue
-            btn, evt = ev
-            if btn == TOUCH_TAP and evt == "tap":
-                return "again"          # tap anywhere on the score screen -> replay
-            if evt != "press":
-                continue
-            if btn == 3 or btn == 4:      # BTN-3 tile, or hardware BACK/HOME
-                return "back"
-            if btn in (0, 1, 2):
-                return "again"
-
-    async def _show_back_fallback(self, idx):
-        # Procedural stand-in until btn_back_280x240.bz is baked & uploaded.
-        bg = rgb(60, 15, 15)
-        await self.display.fill_btn(idx, bg)
-        await self.display.draw_btn_border(idx, rgb(200, 60, 60))
-        label = "BACK"
-        lx = config.BTN_W // 2 - len(label) * 4
-        await self.display.text_btn(idx, label, max(0, lx),
-                                    config.BTN_H // 2 - 4, WHITE, bg, scale=1)
-
-    async def _show_replay_fallback(self, idx):
-        bg = rgb(15, 60, 20)
-        await self.display.fill_btn(idx, bg)
-        await self.display.draw_btn_border(idx, rgb(60, 200, 90))
-        label = "AGAIN"
-        lx = config.BTN_W // 2 - len(label) * 4
-        await self.display.text_btn(idx, label, max(0, lx), config.BTN_H // 2 - 4, WHITE, bg, scale=1)

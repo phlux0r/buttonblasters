@@ -17,6 +17,14 @@
 import asyncio
 import random
 import config
+from core.display_manager import WHITE, YELLOW, rgb
+from drivers.haptic import haptic
+from drivers.touch import TOUCH_TAP
+
+# Shared end-screen tiles (baked once, used by every game): BTN-3 = Back
+# to the menu, BTN-0/1/2 = Play again. See BaseGame.show_end_screen().
+BACK_TILE_PATH  = "/assets/menu/btn_back_280x240.bz"
+AGAIN_TILE_PATH = "/assets/menu/btn_again_280x240.bz"
 
 
 def shuffle(lst):
@@ -70,6 +78,19 @@ class BaseGame:
     MAX_SCORE      = None    # override in subclasses with a natural score ceiling
                              # (e.g. total matches) so stars scale to it instead
                              # of the flat fallback below.
+
+    # ── End-screen layout (see show_end_screen) ─────────────────
+    RESULT_PATH           = None      # baked 480x320 BE result card, or None
+    RESULT_SCORE_Y        = 124       # score line y on the card (scale 2)
+    RESULT_STARS_Y        = 152       # star line y on the card (scale 3)
+    RESULT_SCORE_COLOR    = 0xEA16    # hot pink, on the card's white zone
+    RESULT_EXTRA_GAP      = 28        # extra line's y offset from the stars:
+                                      # stars render at scale 3 (24px glyphs),
+                                      # so this must clear 24px -- +16 visibly
+                                      # overlapped on hardware
+    RESULT_FALLBACK_TITLE = "Well done!"          # show_splash() title if no card
+    RESULT_FALLBACK_BG    = rgb(10, 60, 20)
+    RESULT_FALLBACK_STARS_Y = 172                  # below show_splash's subtitle
 
     def __init__(self, display, audio, leds, buttons, assets_mgr,
                  best_score=0, best_time_s=None):
@@ -191,6 +212,87 @@ class BaseGame:
         else:
             await self.audio.play_voice("well_done.wav", wait=True)
 
+    # ── Shared end screen ────────────────────────────────────────
+    # Every game ends a round-set the same way: result card on the main
+    # screen (score + stars, optional extra line), "Again" tiles on
+    # BTN-0/1/2, "Back" on BTN-3, the round-complete cheer, then wait for
+    # a choice with the idle auto-return. Layout knobs are the RESULT_*
+    # class attributes above; games only supply the score string.
+
+    async def show_end_screen(self, score_str, extra_line=None):
+        """Paint the standard end screen and wait for the player.
+        extra_line: optional text drawn one line below the stars (e.g. a
+        clean-run time). Returns "again" or "back"."""
+        try:
+            self.leds.stop_effect()
+        except Exception:
+            pass
+
+        stars    = self._stars_for(self.score)
+        star_str = ("*" * stars) + ("-" * (3 - stars))
+        cx       = config.MAIN_W // 2
+
+        if self.RESULT_PATH and await self.display.paint_main_bg(self.RESULT_PATH):
+            bg, fg, stars_y = WHITE, self.RESULT_SCORE_COLOR, self.RESULT_STARS_Y
+            await self.display.text_main(
+                score_str, cx - len(score_str) * 8, self.RESULT_SCORE_Y,
+                fg, bg, scale=2)
+        else:
+            bg, fg, stars_y = self.RESULT_FALLBACK_BG, YELLOW, self.RESULT_FALLBACK_STARS_Y
+            await self.display.show_splash(self.RESULT_FALLBACK_TITLE, score_str,
+                                           bg_color=bg)
+        # scale 3 -> 24px per char, half 12
+        await self.display.text_main(
+            star_str, cx - len(star_str) * 12, stars_y, YELLOW, bg, scale=3)
+        if extra_line:
+            await self.display.text_main(
+                extra_line, cx - len(extra_line) * 8,
+                stars_y + self.RESULT_EXTRA_GAP, fg, bg, scale=2)
+
+        await self._paint_end_tiles()
+
+        # All drawing done — now the cheer, so playback never overlaps an
+        # SPI write. Fires once per completed round-set, not at exit time.
+        await self.announce_round_complete()
+
+        return await self.wait_or_timeout_back(self.wait_end_choice())
+
+    async def _paint_end_tiles(self):
+        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
+            await self._paint_tile_fallback(3, "BACK", rgb(60, 15, 15),
+                                            rgb(200, 60, 60))
+        for idx in (0, 1, 2):
+            if not await self.display.paint_btn_bg(idx, AGAIN_TILE_PATH):
+                await self._paint_tile_fallback(idx, "AGAIN", rgb(15, 60, 20),
+                                                rgb(60, 200, 90))
+
+    async def _paint_tile_fallback(self, idx, label, bg, border):
+        # Procedural stand-in if a shared tile asset is missing.
+        await self.display.fill_btn(idx, bg)
+        await self.display.draw_btn_border(idx, border)
+        lx = config.BTN_W // 2 - len(label) * 4
+        await self.display.text_btn(idx, label, max(0, lx),
+                                    config.BTN_H // 2 - 4, WHITE, bg, scale=1)
+
+    async def wait_end_choice(self):
+        """Block until the player picks on the end screen: "again" for
+        BTN-0/1/2 or a tap anywhere, "back" for BTN-3 or BACK/HOME."""
+        self.buttons.clear()
+        while True:
+            ev = self.buttons.poll()
+            if ev is None:
+                await asyncio.sleep_ms(20)
+                continue
+            btn, evt = ev
+            if btn == TOUCH_TAP and evt == "tap":
+                return "again"
+            if evt != "press":
+                continue
+            if btn == 3 or btn == 4:
+                return "back"
+            if btn in (0, 1, 2):
+                return "again"
+
     async def show_game_over(self):
         if self.leds.ready:
             self.leds.start_effect(self.leds.pulse(150, 0, 0))
@@ -253,6 +355,3 @@ class BaseGame:
         if score >= 10: stars = 2
         if score >= 20: stars = 3
         return stars
-
-# Import haptic here to avoid circular at top of file
-from drivers.haptic import haptic

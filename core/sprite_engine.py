@@ -325,6 +325,41 @@ class SpriteEngine:
             self._task = None
 
 
+# ---------------------------------------------------------------- placeholder bg
+
+class FlatBackground:
+    """Background-compatible stub filling every strip with one flat RGB565
+    colour (LE). For games whose board asset is missing/invalid, so the
+    mechanic stays playable/testable before the real art is baked."""
+    big_endian = False
+
+    def __init__(self, w, h, strip_h, color565):
+        self.w = w
+        self.h = h
+        self.strip_h = strip_h
+        self.n_strips = (h + strip_h - 1) // strip_h
+        self._row = bytes([color565 & 0xFF, (color565 >> 8) & 0xFF]) * w
+
+    def strip_rows(self, i):
+        if i == self.n_strips - 1:
+            r = self.h - i * self.strip_h
+            return r if r else self.strip_h
+        return self.strip_h
+
+    def read_strip(self, i, buf):
+        rows = self.strip_rows(i)
+        mv = memoryview(buf)
+        rb = len(self._row)
+        off = 0
+        for _ in range(rows):
+            mv[off:off + rb] = self._row
+            off += rb
+        return rows
+
+    def close(self):
+        pass
+
+
 # ---------------------------------------------------------------- buttons
 
 class ButtonSprite:

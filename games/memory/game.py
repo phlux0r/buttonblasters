@@ -36,7 +36,6 @@ import config
 from core.game_base import BaseGame, GameResult
 from core.display_manager import rgb, WHITE, RED, GREEN, BLUE, YELLOW
 from drivers import flash_assets
-from drivers.touch import TOUCH_TAP
 
 # ── Content ──────────────────────────────────────────────────────
 # Reuse Star Bonk!'s 4 characters/icons -- same names, same button order,
@@ -68,13 +67,6 @@ STEP_GAP_MS  = 200     # dark gap between playback steps
 PRESS_LIT_MS = 220     # how long a player's own press flashes back
 ROUND_GAP_MS = 500     # pause after a correct round before the sequence grows
 
-RESULT_BG = rgb(20, 10, 50)
-BACK_TILE_PATH  = "/assets/menu/btn_back_280x240.bz"     # shared across games
-AGAIN_TILE_PATH = "/assets/menu/btn_again_280x240.bz"    # shared across games
-RESULT_PATH     = "/assets/memory/bgm_result_480x320.bz"
-RESULT_SCORE_Y  = 135   # score overlay y, scale-2 (was 120, then 125 -- lowered
-                         # another 10px per feedback on the real art)
-RESULT_STARS_Y  = 148   # star rating overlay y, scale-3, below the score
 
 # One background covers both the "Watch!" and "Your turn!" phases of a
 # round -- only the overlay text/colour changes between them (same trick
@@ -105,6 +97,12 @@ class ButtonMemoryGame(BaseGame):
     USES_COUNTDOWN = False       # the first "watch!" sequence is its own intro
     MENU_HEADER   = rgb(40, 20, 90)   # deep purple, distinct from Match/Bonk
     MAX_SCORE     = MAX_SCORE
+    RESULT_PATH    = "/assets/memory/bgm_result_480x320.bz"
+    RESULT_SCORE_Y = 135   # was 120, then 125 -- lowered per feedback on the real art
+    RESULT_STARS_Y = 148
+    RESULT_FALLBACK_TITLE   = "Nice memory!"
+    RESULT_FALLBACK_BG      = rgb(20, 10, 50)
+    RESULT_FALLBACK_STARS_Y = 168
 
     # ── Lifecycle ────────────────────────────────────────────────
 
@@ -281,74 +279,5 @@ class ButtonMemoryGame(BaseGame):
     # ── End screen ───────────────────────────────────────────────
 
     async def _end_screen(self):
-        """Result card + BTN-3 'Back' (bottom-right) / BTN-0,1,2 'Play again'.
-        A screen tap also replays, matching Match It! / Star Bonk!. No
-        timeout — waits indefinitely for a choice."""
-        try:
-            self.leds.stop_effect()
-        except Exception:
-            pass
+        return await self.show_end_screen("Round %d" % self.score)
 
-        score_str = "Round %d" % self.score
-        stars     = self._stars_for(self.score)
-        star_str  = ("*" * stars) + ("-" * (3 - stars))
-
-        if await self.display.paint_main_bg(RESULT_PATH):
-            ssx = config.MAIN_W // 2 - len(score_str) * 8
-            await self.display.text_main(
-                score_str, ssx, RESULT_SCORE_Y, 0xEA16, WHITE, scale=2)
-            stx = config.MAIN_W // 2 - len(star_str) * 12   # scale 3 -> char 24, half 12
-            await self.display.text_main(
-                star_str, stx, RESULT_STARS_Y, YELLOW, WHITE, scale=3)
-        else:
-            await self.display.show_splash("Nice memory!", score_str, bg_color=RESULT_BG)
-            stx = config.MAIN_W // 2 - len(star_str) * 12
-            await self.display.text_main(
-                star_str, stx, 168, YELLOW, RESULT_BG, scale=3)
-
-        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
-            await self._show_back_fallback(3)
-        for idx in (0, 1, 2):
-            if not await self.display.paint_btn_bg(idx, AGAIN_TILE_PATH):
-                await self._show_replay_fallback(idx)
-
-        await self.announce_round_complete()
-
-        return await self.wait_or_timeout_back(self._wait_end_choice())
-
-    async def _wait_end_choice(self):
-        self.buttons.clear()
-        while True:
-            ev = self.buttons.poll()
-            if ev is None:
-                await asyncio.sleep_ms(20)
-                continue
-            btn, evt = ev
-            if btn == TOUCH_TAP and evt == "tap":
-                return "again"          # tap anywhere on the score screen -> replay
-            if evt != "press":
-                continue
-            if btn == 3 or btn == 4:      # BTN-3 tile, or hardware BACK/HOME
-                return "back"
-            if btn in (0, 1, 2):
-                return "again"
-
-    async def _show_back_fallback(self, idx):
-        # Only used if btn_back_280x240.bz is somehow missing -- normally
-        # paint_btn_bg() above finds the shared asset every other game uses.
-        bg = rgb(60, 15, 15)
-        await self.display.fill_btn(idx, bg)
-        await self.display.draw_btn_border(idx, rgb(200, 60, 60))
-        label = "BACK"
-        lx = config.BTN_W // 2 - len(label) * 4
-        await self.display.text_btn(idx, label, max(0, lx),
-                                    config.BTN_H // 2 - 4, WHITE, bg, scale=1)
-
-    async def _show_replay_fallback(self, idx):
-        # Only used if btn_again_280x240.bz is somehow missing.
-        bg = rgb(15, 60, 20)
-        await self.display.fill_btn(idx, bg)
-        await self.display.draw_btn_border(idx, rgb(60, 200, 90))
-        label = "AGAIN"
-        lx = config.BTN_W // 2 - len(label) * 4
-        await self.display.text_btn(idx, label, max(0, lx), config.BTN_H // 2 - 4, WHITE, bg, scale=1)

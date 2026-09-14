@@ -63,11 +63,10 @@ from core.game_base import BaseGame, GameResult, shuffle
 from core.display_manager import (rgb, WHITE, RED, GREEN, BLUE, YELLOW, DARK,
                                   BLACK, seat_bg_scratch)
 from core import game_cache
-from core.sprite_engine import SpriteEngine, STRIP_H
+from core.sprite_engine import SpriteEngine, FlatBackground, STRIP_H
 from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
 from drivers import flash_assets
 from drivers.haptic import haptic
-from drivers.touch import TOUCH_TAP
 
 # ── Content ──────────────────────────────────────────────────────
 TARGETS = ("wizard", "goblin", "star", "mushroom")
@@ -85,10 +84,6 @@ MAX_SCORE = round(TOTAL_HITS * (sum(TARGET_POINTS.values()) / len(TARGET_POINTS)
 
 ASSET_DIR = "/assets/static/bonk/"          # Tier A: small, always resident
 BOARD_PATH = "/assets/bonk/bg_bonk_480x320.bz"   # Tier B: SD-installed at load
-RESULT_PATH    = "/assets/bonk/bgm_result_480x320.bz"   # Tier B, same as BOARD_PATH
-RESULT_SCORE_Y = 124      # score overlay y -- matches Match It!'s result card,
-                          # one line above RESULT_STARS_Y for the star rating
-RESULT_STARS_Y = 152      # star rating overlay y, scale-3, below the score
 
 # ── Geometry ─────────────────────────────────────────────────────
 ICON = 96
@@ -115,12 +110,6 @@ LEGEND_BG    = WHITE                 # populated-target tile bg -- matches
 FALLBACK_BOARD_COLOR = rgb(30, 70, 40)   # flat meadow, used if the real
                                           # board asset is missing/invalid
 
-REPLAY_TILE_PATH = "/assets/menu/btn_again_280x240.bz"   # shared across games --
-                                                          # was btn_menu-bonk (own
-                                                          # menu tile), switched to
-                                                          # the same "Again" tile
-                                                          # every game uses now
-BACK_TILE_PATH   = "/assets/menu/btn_back_280x240.bz"        # shared across games
 
 def _main_asset_path(name):
     return "%sspr_%s_%dx%dx1.sz" % (ASSET_DIR, name, ICON, ICON)
@@ -128,41 +117,6 @@ def _main_asset_path(name):
 
 def _btn_asset_path(name):
     return "%ssprb_%s_%dx%dx1.sz" % (ASSET_DIR, name, ICON, ICON)
-
-
-class _FlatBackground:
-    """Background-compatible stub filling every strip with one flat RGB565
-    colour (LE). Used only if bg_bonk_480x320.bz is missing/invalid, so
-    Star Bonk stays playable/testable before the real art is baked —
-    mirrors the "coloured placeholder" fallback Match It! uses per-icon."""
-    big_endian = False
-
-    def __init__(self, w, h, strip_h, color565):
-        self.w = w
-        self.h = h
-        self.strip_h = strip_h
-        self.n_strips = (h + strip_h - 1) // strip_h
-        self._lo = color565 & 0xFF
-        self._hi = (color565 >> 8) & 0xFF
-
-    def strip_rows(self, i):
-        if i == self.n_strips - 1:
-            r = self.h - i * self.strip_h
-            return r if r else self.strip_h
-        return self.strip_h
-
-    def read_strip(self, i, buf):
-        rows = self.strip_rows(i)
-        row = bytes([self._lo, self._hi]) * self.w
-        mv = memoryview(buf)
-        off = 0
-        for _ in range(rows):
-            mv[off:off + len(row)] = row
-            off += len(row)
-        return rows
-
-    def close(self):
-        pass
 
 
 async def _guarded(coro):
@@ -189,6 +143,8 @@ class StarBonkGame(BaseGame):
     USES_COUNTDOWN = True      # reaction game -- keep the 3-2-1 (BaseGame default)
     MENU_HEADER   = HEADER_COLOR
     MAX_SCORE     = MAX_SCORE
+    RESULT_PATH   = "/assets/bonk/bgm_result_480x320.bz"   # Tier B, like BOARD_PATH
+    RESULT_FALLBACK_TITLE = "Great bonking!"
 
     # ── Lifecycle ────────────────────────────────────────────────
 
@@ -248,7 +204,7 @@ class StarBonkGame(BaseGame):
                                   screen_w=config.MAIN_W, screen_h=config.MAIN_H)
         except Exception as e:
             print("[bonk] board asset missing/invalid, using flat placeholder:", e)
-            bg = _FlatBackground(config.MAIN_W, config.MAIN_H, STRIP_H,
+            bg = FlatBackground(config.MAIN_W, config.MAIN_H, STRIP_H,
                                  FALLBACK_BOARD_COLOR)
             engine = SpriteEngine(self._adapter, bg,
                                   screen_w=config.MAIN_W, screen_h=config.MAIN_H)
@@ -514,71 +470,5 @@ class StarBonkGame(BaseGame):
     # ── End screen ────────────────────────────────────────────────
 
     async def _end_screen(self):
-        try:
-            self.leds.stop_effect()
-        except Exception:
-            pass
+        return await self.show_end_screen("%d pts" % self.score)
 
-        score_str = "%d pts" % self.score
-        stars     = self._stars_for(self.score)
-        star_str  = ("*" * stars) + ("-" * (3 - stars))
-        if await self.display.paint_main_bg(RESULT_PATH):
-            ssx = config.MAIN_W // 2 - len(score_str) * 8
-            await self.display.text_main(
-                score_str, ssx, RESULT_SCORE_Y, 0xEA16, WHITE, scale=2)
-            stx = config.MAIN_W // 2 - len(star_str) * 12   # scale 3 -> char 24, half 12
-            await self.display.text_main(
-                star_str, stx, RESULT_STARS_Y, YELLOW, WHITE, scale=3)
-        else:
-            await self.display.show_splash("Great bonking!", score_str,
-                                           bg_color=rgb(10, 60, 20))
-            stx = config.MAIN_W // 2 - len(star_str) * 12
-            await self.display.text_main(   # below show_splash's subtitle line
-                star_str, stx, 172, YELLOW, rgb(10, 60, 20), scale=3)
-
-        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
-            await self._show_back_fallback(3)
-        for idx in (0, 1, 2):
-            if not await self.display.paint_btn_bg(idx, REPLAY_TILE_PATH):
-                await self._show_replay_fallback(idx)
-
-        # All drawing done — now the cheer, so playback doesn't overlap any
-        # SPI writes (same rule as Match It!'s end screen).
-        await self.announce_round_complete()
-
-        return await self.wait_or_timeout_back(self._wait_end_choice())
-
-    async def _wait_end_choice(self):
-        self.buttons.clear()
-        while True:
-            ev = self.buttons.poll()
-            if ev is None:
-                await asyncio.sleep_ms(20)
-                continue
-            btn, evt = ev
-            if btn == TOUCH_TAP and evt == "tap":
-                return "again"          # tap anywhere on the score screen -> replay
-            if evt != "press":
-                continue
-            if btn == 3 or btn == 4:      # BTN-3 tile, or hardware BACK/HOME
-                return "back"
-            if btn in (0, 1, 2):
-                return "again"
-
-    async def _show_back_fallback(self, idx):
-        bg = rgb(60, 15, 15)
-        await self.display.fill_btn(idx, bg)
-        await self.display.draw_btn_border(idx, rgb(200, 60, 60))
-        label = "BACK"
-        lx = config.BTN_W // 2 - len(label) * 4
-        await self.display.text_btn(idx, label, max(0, lx),
-                                    config.BTN_H // 2 - 4, WHITE, bg, scale=1)
-
-    async def _show_replay_fallback(self, idx):
-        bg = rgb(15, 60, 20)
-        await self.display.fill_btn(idx, bg)
-        await self.display.draw_btn_border(idx, rgb(60, 200, 90))
-        label = "AGAIN"
-        lx = config.BTN_W // 2 - len(label) * 4
-        await self.display.text_btn(idx, label, max(0, lx),
-                                    config.BTN_H // 2 - 4, WHITE, bg, scale=1)

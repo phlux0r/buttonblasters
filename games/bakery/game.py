@@ -111,10 +111,9 @@ from core.game_base import BaseGame, GameResult, shuffle
 from core.display_manager import (rgb, WHITE, RED, GREEN, BLUE, YELLOW, DARK,
                                   BLACK, seat_bg_scratch)
 from core import game_cache
-from core.sprite_engine import SpriteEngine, STRIP_H
+from core.sprite_engine import SpriteEngine, FlatBackground, STRIP_H
 from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
 from drivers import flash_assets
-from drivers.touch import TOUCH_TAP
 from drivers.haptic import haptic
 
 # ── Content ──────────────────────────────────────────────────────
@@ -136,13 +135,10 @@ DECOYS_PER_ROUND = 1     # see MEMORY NOTE above -- 4 needed + 1 decoy = 5
 
 ASSET_DIR   = "/assets/static/bakery/"           # Tier A: always resident
 BOARD_PATH  = "/assets/bakery/bg_bakery_480x320.bz"        # Tier B
-RESULT_PATH = "/assets/bakery/bgm_result_480x320.bz"       # Tier B
 RECIPE_CARD_PATH = "/assets/bakery/bgm_recipe-%s_280x169.bz"
 BAKED_CARD_PATH  = "/assets/bakery/bgm_baked-%s_480x320.bz"   # full screen, not
                                                                # a card blit --
                                                                # see _play_round
-BACK_TILE_PATH   = "/assets/menu/btn_back_280x240.bz"      # shared across games
-AGAIN_TILE_PATH  = "/assets/menu/btn_again_280x240.bz"     # shared across games
 
 # ── Geometry ─────────────────────────────────────────────────────
 ICON = 96
@@ -227,8 +223,6 @@ LOCKED_BORDER  = rgb(60, 200, 90)         # green -- can't be cleared
 REMOVABLE_BORDER = rgb(230, 150, 40)      # orange -- press to clear
 HEADER_COLOR   = rgb(120, 60, 20)         # warm bakery brown
 FALLBACK_BOARD_COLOR = rgb(90, 60, 30)
-RESULT_SCORE_Y = 124
-RESULT_STARS_Y = 152
 
 _FALLBACK = (RED, BLUE, GREEN, YELLOW, rgb(200, 120, 0), rgb(150, 60, 200),
              rgb(0, 150, 150), rgb(180, 180, 0), rgb(120, 80, 40))
@@ -246,40 +240,6 @@ def _voice_file(name):
     return name.replace("-", "_") + ".wav"
 
 
-class _FlatBackground:
-    """Same convention as Star Bonk!'s placeholder -- fills every strip
-    with one flat LE colour so the game stays testable before the real
-    board art exists."""
-    big_endian = False
-
-    def __init__(self, w, h, strip_h, color565):
-        self.w = w
-        self.h = h
-        self.strip_h = strip_h
-        self.n_strips = (h + strip_h - 1) // strip_h
-        self._lo = color565 & 0xFF
-        self._hi = (color565 >> 8) & 0xFF
-
-    def strip_rows(self, i):
-        if i == self.n_strips - 1:
-            r = self.h - i * self.strip_h
-            return r if r else self.strip_h
-        return self.strip_h
-
-    def read_strip(self, i, buf):
-        rows = self.strip_rows(i)
-        row = bytes([self._lo, self._hi]) * self.w
-        mv = memoryview(buf)
-        off = 0
-        for _ in range(rows):
-            mv[off:off + len(row)] = row
-            off += len(row)
-        return rows
-
-    def close(self):
-        pass
-
-
 class MagicBakeryGame(BaseGame):
 
     GAME_ID      = "bakery"
@@ -293,6 +253,9 @@ class MagicBakeryGame(BaseGame):
     USES_COUNTDOWN = False     # each recipe's own reveal is its intro
     MENU_HEADER   = HEADER_COLOR
     MAX_SCORE     = ROUNDS_PER_GAME   # score = recipes completed (0-3)
+    RESULT_PATH   = "/assets/bakery/bgm_result_480x320.bz"   # Tier B
+    RESULT_FALLBACK_TITLE = "Bakery done!"
+    RESULT_FALLBACK_BG    = rgb(60, 30, 10)
 
     # ── Lifecycle ────────────────────────────────────────────────
 
@@ -319,7 +282,7 @@ class MagicBakeryGame(BaseGame):
                                   screen_w=config.MAIN_W, screen_h=config.MAIN_H)
         except Exception as e:
             print("[bakery] board asset missing/invalid, using flat placeholder:", e)
-            bg = _FlatBackground(config.MAIN_W, config.MAIN_H, STRIP_H,
+            bg = FlatBackground(config.MAIN_W, config.MAIN_H, STRIP_H,
                                  FALLBACK_BOARD_COLOR)
             engine = SpriteEngine(self._adapter, bg,
                                   screen_w=config.MAIN_W, screen_h=config.MAIN_H)
@@ -774,74 +737,10 @@ class MagicBakeryGame(BaseGame):
     # ── End screen ───────────────────────────────────────────────
 
     async def _end_screen(self):
-        try:
-            self.leds.stop_effect()
-        except Exception:
-            pass
-
         if self.score == ROUNDS_PER_GAME:
             total_s = self._total_elapsed_ms / 1000
             score_str = "%d:%02d" % (int(total_s) // 60, int(total_s) % 60)
         else:
             score_str = "%d of %d baked" % (self.score, ROUNDS_PER_GAME)
-        stars = self._stars_for(self.score)
-        star_str = ("*" * stars) + ("-" * (3 - stars))
+        return await self.show_end_screen(score_str)
 
-        if await self.display.paint_main_bg(RESULT_PATH):
-            ssx = config.MAIN_W // 2 - len(score_str) * 8
-            await self.display.text_main(
-                score_str, ssx, RESULT_SCORE_Y, 0xEA16, WHITE, scale=2)
-            stx = config.MAIN_W // 2 - len(star_str) * 12
-            await self.display.text_main(
-                star_str, stx, RESULT_STARS_Y, YELLOW, WHITE, scale=3)
-        else:
-            await self.display.show_splash("Bakery done!", score_str,
-                                           bg_color=rgb(60, 30, 10))
-            stx = config.MAIN_W // 2 - len(star_str) * 12
-            await self.display.text_main(
-                star_str, stx, 172, YELLOW, rgb(60, 30, 10), scale=3)
-
-        if not await self.display.paint_btn_bg(3, BACK_TILE_PATH):
-            await self._show_back_fallback(3)
-        for idx in (0, 1, 2):
-            if not await self.display.paint_btn_bg(idx, AGAIN_TILE_PATH):
-                await self._show_replay_fallback(idx)
-
-        await self.announce_round_complete()
-
-        return await self.wait_or_timeout_back(self._wait_end_choice())
-
-    async def _wait_end_choice(self):
-        self.buttons.clear()
-        while True:
-            ev = self.buttons.poll()
-            if ev is None:
-                await asyncio.sleep_ms(20)
-                continue
-            btn, evt = ev
-            if btn == TOUCH_TAP and evt == "tap":
-                return "again"
-            if evt != "press":
-                continue
-            if btn == 3 or btn == 4:
-                return "back"
-            if btn in (0, 1, 2):
-                return "again"
-
-    async def _show_back_fallback(self, idx):
-        bg = rgb(60, 15, 15)
-        await self.display.fill_btn(idx, bg)
-        await self.display.draw_btn_border(idx, rgb(200, 60, 60))
-        label = "BACK"
-        lx = config.BTN_W // 2 - len(label) * 4
-        await self.display.text_btn(idx, label, max(0, lx),
-                                    config.BTN_H // 2 - 4, WHITE, bg, scale=1)
-
-    async def _show_replay_fallback(self, idx):
-        bg = rgb(15, 60, 20)
-        await self.display.fill_btn(idx, bg)
-        await self.display.draw_btn_border(idx, rgb(60, 200, 90))
-        label = "AGAIN"
-        lx = config.BTN_W // 2 - len(label) * 4
-        await self.display.text_btn(idx, label, max(0, lx),
-                                    config.BTN_H // 2 - 4, WHITE, bg, scale=1)
