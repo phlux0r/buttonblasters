@@ -94,7 +94,7 @@ class ButtonMemoryGame(BaseGame):
     MAX_AGE      = 7
     USES_BUTTONS = (0, 1, 2, 3)
     USES_NAV     = False
-    USES_COUNTDOWN = False       # the first "watch!" sequence is its own intro
+    USES_COUNTDOWN = True        # 3-2-1-GO! once before the first "Watch!"
     MENU_HEADER   = rgb(40, 20, 90)   # deep purple, distinct from Match/Bonk
     MAX_SCORE     = MAX_SCORE
     RESULT_PATH    = "/assets/memory/bgm_result_480x320.bz"
@@ -122,6 +122,9 @@ class ButtonMemoryGame(BaseGame):
         self._running = True
         self.score = 0
         self.sequence = []
+
+        if self.USES_COUNTDOWN:
+            await self.countdown(3)   # only ever fires once — never on replay
 
         while True:
             self.sequence = []

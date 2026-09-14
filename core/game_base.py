@@ -93,6 +93,13 @@ class BaseGame:
     RESULT_FALLBACK_BG    = rgb(10, 60, 20)
     RESULT_FALLBACK_STARS_Y = 172                  # below show_splash's subtitle
 
+    # ── Countdown colours (see countdown) ───────────────────────
+    # Playful by default: lilac for 3-2-1, pink for GO!, dark purple
+    # numerals. Override per game to retheme its countdown.
+    COUNTDOWN_BG    = rgb(200, 170, 235)   # lilac
+    COUNTDOWN_GO_BG = rgb(245, 160, 200)   # pink
+    COUNTDOWN_FG    = rgb(60, 20, 90)      # deep purple numerals
+
     def __init__(self, display, audio, leds, buttons, assets_mgr,
                  best_score=0, best_time_s=None):
         self.display      = display
@@ -317,7 +324,7 @@ class BaseGame:
         await self.display.fill_main(bg_color)
         cx = config.MAIN_W // 2 - len(text) * 4 * s
         cy = config.MAIN_H // 2 - 4 * s
-        await self.display.text_main(text, cx, cy, color=0xFFFF,
+        await self.display.text_main(text, cx, cy, color=self.COUNTDOWN_FG,
                                      bg=bg_color, scale=s)
 
     async def countdown(self, from_n: int = 3):
@@ -332,8 +339,9 @@ class BaseGame:
         # background tearing on the 'ready'/'go' samples. Rule for every
         # game: never draw while an SD-backed clip may still be reading.
         for n in range(from_n, 0, -1):
-            await self._countdown_beat(str(n), 0x18C3, f"count_{n}.wav", 800)
-        await self._countdown_beat("GO!", 0x0320, "go.wav", 500)
+            await self._countdown_beat(str(n), self.COUNTDOWN_BG,
+                                       f"count_{n}.wav", 800)
+        await self._countdown_beat("GO!", self.COUNTDOWN_GO_BG, "go.wav", 500)
 
     async def _countdown_beat(self, text, bg_color, clip, beat_ms):
         t0 = time.ticks_ms()
