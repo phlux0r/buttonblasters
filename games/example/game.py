@@ -13,7 +13,7 @@ import asyncio
 import random
 import time
 from core.game_base import BaseGame, GameResult
-from core.display_manager import rgb, WHITE, YELLOW, BLACK
+from core.display_manager import rgb, WHITE, YELLOW
 import config
 
 

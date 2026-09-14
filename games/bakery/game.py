@@ -109,7 +109,7 @@ import random
 import config
 from core.game_base import BaseGame, GameResult, shuffle
 from core.display_manager import (rgb, WHITE, RED, GREEN, BLUE, YELLOW, DARK,
-                                  BLACK, seat_bg_scratch)
+                                  seat_bg_scratch)
 from core import game_cache
 from core.sprite_engine import SpriteEngine, FlatBackground, STRIP_H
 from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
@@ -336,7 +336,6 @@ class MagicBakeryGame(BaseGame):
                 break   # mid-game BACK/HOME -- exit immediately, no end screen
 
             if self.score == ROUNDS_PER_GAME:
-                elapsed_s = self._total_elapsed_ms / 1000
                 if self._best_elapsed_ms is None or self._total_elapsed_ms < self._best_elapsed_ms:
                     self._best_elapsed_ms = self._total_elapsed_ms
 
@@ -443,17 +442,6 @@ class MagicBakeryGame(BaseGame):
                         self._deactivate_belt_entry(entry)
                 self._maybe_spawn_belt_item(belt, live_pool or pool, sheets,
                                             collected)
-
-                touch_down = self.buttons.touch_down
-                if touch_down and not touch_was_down:
-                    tx, ty = self.buttons.touch_pos or (0, 0)
-                    hit = self._find_belt_hit(belt, tx, ty)
-                    if hit is not None:
-                        done = await self._handle_tap(
-                            hit, belt, needed, collected, live_pool or pool, sheets)
-                        if done:
-                            break
-                touch_was_down = touch_down
 
                 touch_down = self.buttons.touch_down
                 if touch_down and not touch_was_down:

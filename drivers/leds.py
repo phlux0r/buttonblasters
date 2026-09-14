@@ -8,6 +8,7 @@
 
 import asyncio
 import array
+import math
 import rp2
 from machine import Pin
 import config
@@ -33,14 +34,21 @@ def _ws2812_prog():
 
 
 def _hsv_to_rgb(h: int, s: float, v: float) -> tuple:
+    # Branch on the hue sextant instead of building a 6-tuple lookup list
+    # per call: idle_rainbow() calls this once per LED per 30ms frame, and
+    # that throwaway list was steady heap churn on a non-compacting GC.
     h  = h % 360
     hi = h // 60
     f  = (h / 60) - hi
     p  = v * (1 - s)
     q  = v * (1 - f * s)
     t  = v * (1 - (1 - f) * s)
-    lut = [(v,t,p),(q,v,p),(p,v,t),(p,q,v),(t,p,v),(v,p,q)]
-    r, g, b = lut[hi]
+    if hi == 0:   r, g, b = v, t, p
+    elif hi == 1: r, g, b = q, v, p
+    elif hi == 2: r, g, b = p, v, t
+    elif hi == 3: r, g, b = p, q, v
+    elif hi == 4: r, g, b = t, p, v
+    else:         r, g, b = v, p, q
     return int(r*255), int(g*255), int(b*255)
 
 
@@ -154,7 +162,6 @@ class LedStrip:
             pass
 
     async def pulse(self, r: int, g: int, b: int):
-        import math
         try:
             t = 0
             while True:

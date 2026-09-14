@@ -20,11 +20,10 @@
 #   Touch tap on lower half of main screen → launch selected game
 #   Swipe left/right → scroll carousel
 
-import asyncio
 from core.display_manager import display, WHITE, YELLOW, BLACK, GREEN, DARK, rgb
 from drivers.audio import audio
 from drivers.leds import leds
-from drivers.buttons import buttons, BTN_PREV, BTN_NEXT, BTN_BACK
+from drivers.buttons import buttons
 from drivers.assets import assets
 from drivers.battery import battery
 from core.settings import settings as settings_screen
@@ -299,7 +298,7 @@ class Menu:
             await self._render_btn_game_procedural(slot, game_idx)
 
     async def _render_battery(self, bg):
-        # Uses the bench-calibrated drivers/battery.py (VSYS_ADC_RATIO=2.55,
+        # Uses the bench-calibrated drivers/battery.py (config.VSYS_ADC_RATIO,
         # the safe-read dance for GP29's shared SPI-CLK pin) instead of a
         # separate inline ADC read -- this used to hardcode ratio=2 here,
         # a stale value from before calibration, reporting a materially

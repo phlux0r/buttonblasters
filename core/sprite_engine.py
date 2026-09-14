@@ -123,8 +123,8 @@ class Sprite:
             self._dirty = True
 
     def move_to(self, x, y):
-        # clamp to <= one strip height per tick so a mover dirties
-        # at most ~4 strips (old + new bbox)
+        # clamp to MAX_STEP px per tick per axis so one move can only
+        # dirty a bounded number of strips (old + new bbox)
         dx = x - self.x
         dy = y - self.y
         if dx > MAX_STEP:

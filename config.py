@@ -109,11 +109,11 @@ NUM_BTN_SCREENS = 4
 ST7789_MADCTL = (0xA0, 0xA0, 0x60, 0x60)   # indexed by BTN-0..3, both
                                             # values bench-confirmed
 
-# ── SD card — DEFERRED ───────────────────────────────────────────
-# ILI9488 SDO permanently drives MISO low — built-in slot unusable.
-# Separate SPI breakout needed. GP3 reserved for SD_CS.
+# ── SD card (separate SPI breakout, confirmed) ───────────────────
+# ILI9488 SDO permanently drives MISO low — the display module's built-in
+# slot is unusable, so the card sits on its own breakout with CS on GP3.
 PIN_CS_SD  = 3
-SD_DEFERRED = False
+SD_DEFERRED = False   # True skips the mount at boot (bench/debug only)
 
 # ── I²C — FT6236 touch + MCP23008 expander ──────────────────────
 # Both devices share the same I2C bus.

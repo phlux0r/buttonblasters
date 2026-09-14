@@ -9,7 +9,6 @@
 # the same bg makes the blit seamless.
 
 import math
-import framebuf
 
 # Shape name groups
 BASE_SHAPES  = ("circle", "square", "triangle", "star")

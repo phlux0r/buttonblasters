@@ -38,7 +38,7 @@
 
 import asyncio
 import time
-from machine import I2C, Pin
+from machine import I2C
 import config
 from drivers.touch import TOUCH_TAP, TOUCH_LONG_PRESS, TOUCH_SWIPE
 

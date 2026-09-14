@@ -4,7 +4,7 @@
 # SD card status: WORKING (separate SPI breakout on shared SPI0 bus)
 #   Built-in ILI9488 slot is unusable (SDO drives MISO/GP4 low).
 #   Separate breakout: SD_CS=GP3, 10kΩ pull-up on MISO (hardware),
-#   data transfers at 400kHz. Verified by test_sd_card.py.
+#   data transfers at config.SPI_FREQ_SD_DATA. Verified by test_sd_card.py.
 #   All methods remain safe to call with no SD — they return None/False.
 #
 # Directory layout (when SD available):
@@ -22,14 +22,14 @@ import asyncio
 import os
 from machine import Pin
 import config
+from drivers.spi_bus import spi_bus
 
 _SD_MOUNT = "/sd"
 _IMG_ROOT = _SD_MOUNT + "/images"
 _AUD_ROOT = _SD_MOUNT + "/audio"
 
-# SD data-transfer rate comes from config.SPI_FREQ_SD_DATA (400kHz —
-# the rate test_sd_card.py passed at; 1.32MHz+ throws EIO on this
-# breadboard; bump the config value on the soldered board).
+# SD data-transfer rate. Tune it in config.py (see the bench notes there),
+# never here.
 _SD_DATA_BAUD = config.SPI_FREQ_SD_DATA
 
 # Other CS pins on the shared SPI0 bus. Held HIGH before SD init so no
@@ -55,7 +55,6 @@ class AssetManager:
         if config.SD_DEFERRED:
             print("[assets] SD deferred — separate breakout needed")
             return False
-        from drivers.spi_bus import spi_bus
         try:
             from sdcard import SDCard
             from machine import SPI
@@ -74,14 +73,14 @@ class AssetManager:
                          mosi=Pin(config.PIN_MOSI),
                          miso=Pin(config.PIN_MISO))
 
-            # baudrate here is the POST-init data rate. Must be 400kHz on
-            # this breadboard (see _SD_DATA_BAUD note above) — the driver
-            # default of 1.32MHz fails with EIO on block reads.
+            # baudrate here is the POST-init data rate (config-driven; the
+            # driver's own 1.32MHz default EIO'd on the breadboard build).
             sd = SDCard(sd_spi, cs, baudrate=_SD_DATA_BAUD)
             os.mount(sd, _SD_MOUNT)
 
             self._sd_mounted = True
-            print("[assets] SD mounted at", _SD_MOUNT, "@ 400kHz data")
+            print("[assets] SD mounted at %s @ %dkHz data"
+                  % (_SD_MOUNT, _SD_DATA_BAUD // 1000))
             return True
         except Exception as e:
             print(f"[assets] SD mount failed: {e}")
@@ -99,17 +98,18 @@ class AssetManager:
             # This has to be a finally, not a tail call after os.mount():
             # when the SD card isn't found, SDCard()/os.mount() raises and
             # a tail call is skipped entirely, leaving the bus stranded at
-            # SD speed — every display draw after a failed mount runs at
-            # 400kHz instead of 10MHz (the slow-fail-screen symptom).
+            # SD speed — every display draw after a failed mount ran at SD
+            # speed instead of display speed (the slow-fail-screen symptom).
             #
             # SHARED-BUS RULE: SD and all five displays share SPI0 at
-            # different speeds (SD=400kHz, displays=10MHz), and sdcard.py
-            # does NOT re-assert its speed per read. Every SD access after
-            # a successful mount must therefore run inside a bracketed
-            # window — spi_bus.raw(config.SPI_FREQ_SD_DATA) or an explicit
-            # set_freq()/finally pair — as read_file(), game_cache, audio,
-            # and the kernel's score I/O all do. A bare open() on /sd runs
-            # at 10MHz and EIOs (or collides with a display transaction).
+            # different speeds (SPI_FREQ_SD_DATA vs SPI_FREQ_DISPLAY), and
+            # sdcard.py does NOT re-assert its speed per read. Every SD
+            # access after a successful mount must therefore run inside a
+            # bracketed window — spi_bus.raw(config.SPI_FREQ_SD_DATA) or an
+            # explicit set_freq()/finally pair — as load_image(),
+            # read_file(), game_cache, and the kernel's score I/O all do. A
+            # bare open() on /sd runs at display speed and EIOs (or
+            # collides with a display transaction).
             spi_bus.invalidate()
             spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
 
@@ -162,15 +162,19 @@ class AssetManager:
         if path in self._cache:
             return self._cache[path]
         try:
-            size = os.stat(path)[6]
-            buf  = bytearray(size)
-            with open(path, "rb") as f:
-                mv = memoryview(buf); offset = 0
-                while offset < size:
-                    n = f.readinto(mv[offset:offset+2048])
-                    if n == 0: break
-                    offset += n
-                    await asyncio.sleep_ms(0)
+            # Whole read under the bus lock at SD speed (SHARED-BUS RULE
+            # above): holding the lock across the yields is what keeps a
+            # display draw from resetting the clock mid-file.
+            async with spi_bus.raw(_SD_DATA_BAUD):
+                size = os.stat(path)[6]
+                buf  = bytearray(size)
+                with open(path, "rb") as f:
+                    mv = memoryview(buf); offset = 0
+                    while offset < size:
+                        n = f.readinto(mv[offset:offset+2048])
+                        if n == 0: break
+                        offset += n
+                        await asyncio.sleep_ms(0)
             if size <= self._cache_limit:
                 self._cache[path] = buf
             return buf
@@ -187,10 +191,14 @@ class AssetManager:
         if path in self._cache:
             return self._cache[path]
         try:
-            size = os.stat(path)[6]
-            buf  = bytearray(size)
-            with open(path, "rb") as f:
-                f.readinto(buf)
+            spi_bus.set_freq(_SD_DATA_BAUD)       # SHARED-BUS RULE (see mount_sd)
+            try:
+                size = os.stat(path)[6]
+                buf  = bytearray(size)
+                with open(path, "rb") as f:
+                    f.readinto(buf)
+            finally:
+                spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
             if size <= self._cache_limit:
                 self._cache[path] = buf
             return buf
@@ -199,11 +207,11 @@ class AssetManager:
 
     def read_file(self, path, into=None):
         # Speed-managed SD read. The shared SPI0 bus is left at display speed
-        # (10MHz) after any draw, but SD reads above ~1.32MHz EIO on this
-        # breadboard. Force 400kHz for the read, restore display speed in a
-        # finally so a fault can't strand the bus slow (the 44s-fill symptom).
+        # after any draw; force SD speed for the read and restore display
+        # speed in a finally so a fault can't strand the bus slow (the
+        # 44s-fill symptom).
         #
-        # SYNCHRONOUS with NO awaits inside the 400kHz window, so a display
+        # SYNCHRONOUS with NO awaits inside the SD-speed window, so a display
         # draw can't sneak in mid-read and reset the clock. Call once per file;
         # let the caller await between files.
         #
@@ -211,10 +219,9 @@ class AssetManager:
         #   into None   -> allocates a bytearray of file size, returns it
         if not self._sd_mounted:
             return None
-        from drivers.spi_bus import spi_bus
         alloc = into is None
         try:
-            spi_bus.set_freq(_SD_DATA_BAUD)                       # 400kHz for SD
+            spi_bus.set_freq(_SD_DATA_BAUD)
             if alloc:
                 into = bytearray(os.stat(path)[6])
             mv   = memoryview(into)
@@ -227,7 +234,7 @@ class AssetManager:
                         break
                     off += n
         finally:
-            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)             # restore 10MHz
+            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
         return into if alloc else off
 
     def evict_cache(self, prefix: str = None):

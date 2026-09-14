@@ -65,11 +65,17 @@ class ILI9488:
         fragmentation, the same class of failure as everywhere else in this
         codebase. Call this FIRST, before any other boot-time reservation,
         since it's now the most fragile one of all."""
-        band_bytes = self.w * 16 * 3   # BAND_ROWS=16, must match blit_rgb565
+        self._ensure_blit_scratch(self.w * self._BAND_ROWS * 3)
+
+    # Rows per RGB666 band streamed by blit_rgb565(); the scratch buffer is
+    # sized from this so warm_blit_scratch() and the blit can't disagree.
+    _BAND_ROWS = 16
+
+    def _ensure_blit_scratch(self, band_bytes):
         if self._blit_scratch is None or len(self._blit_scratch) < band_bytes:
             import gc
-            gc.collect()
-            print(f"[display] warm blit scratch {band_bytes}B  free={gc.mem_free()}")
+            gc.collect()   # so the (small) allocation lands in a clean heap
+            print(f"[display] blit scratch alloc {band_bytes}B  free={gc.mem_free()}")
             self._blit_scratch = bytearray(band_bytes)
 
     def init_blocking(self):
@@ -136,39 +142,23 @@ class ILI9488:
 
     async def fill_rgb(self, r: int, g: int, b: int,
                        x=0, y=0, w=None, h=None):
-        w = w or self.w; h = h or self.h
-        px = bytes([r & 0xF8, g & 0xFC, b & 0xF8])
-        total = w * h
-        CHUNK_PX = 1024
-        chunk = px * CHUNK_PX
-        async with spi_bus.device(self._cs, freq=config.SPI_FREQ_DISPLAY):
-            self._set_window(x, y, x+w-1, y+h-1)
-            remaining = total
-            while remaining >= CHUNK_PX:
-                spi_bus.write(chunk)
-                remaining -= CHUNK_PX
-                await asyncio.sleep_ms(0)
-            if remaining:
-                spi_bus.write(px * remaining)
+        # fill() truncates to 5/6/5 when it unpacks the colour, so packing
+        # here and delegating is pixel-identical to a direct RGB fill.
+        c = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+        await self.fill(c, x, y, w, h)
 
     async def blit_rgb565(self, buf: memoryview, x=0, y=0,
                           w=None, h=None):
         """RGB565 buffer → RGB666, converted and streamed in horizontal
         BANDS. A whole 160x160 RGB666 buffer is 76KB and won't allocate
-        in the fragmented heap; a band of BAND_ROWS rows needs only
-        ~w*BAND_ROWS*3 bytes (~7.5KB for a 160-wide shape). The small band
-        scratch is allocated once (grows only if a wider blit appears) and
-        reused per band, so there's no large or per-call allocation."""
+        in the fragmented heap; a band of _BAND_ROWS rows needs only
+        ~w*_BAND_ROWS*3 bytes (~7.5KB for a 160-wide shape). The band
+        scratch is allocated once (warm_blit_scratch() at boot; grows only
+        if a wider blit appears) and reused per band, so there's no large
+        or per-call allocation."""
         w = w or self.w; h = h or self.h
-        BAND_ROWS = 16
-        band_bytes = w * BAND_ROWS * 3
-        # gc before the (small) allocation so it lands in a clean heap.
-        if self._blit_scratch is None or len(self._blit_scratch) < band_bytes:
-            import gc
-            gc.collect()
-            print(f"[display] blit scratch alloc {band_bytes}B  "
-                  f"free={gc.mem_free()}")
-            self._blit_scratch = bytearray(band_bytes)
+        BAND_ROWS = self._BAND_ROWS
+        self._ensure_blit_scratch(w * BAND_ROWS * 3)
         scratch = memoryview(self._blit_scratch)
 
         async with spi_bus.device(self._cs, freq=config.SPI_FREQ_DISPLAY):

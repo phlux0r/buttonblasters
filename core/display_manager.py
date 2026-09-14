@@ -314,8 +314,7 @@ class DisplayManager:
     async def show_prev_indicator(self, active: bool = False):
         """Draw PREV ← on BTN-1 (bottom-left in the 2x2 layout). active=True when pressed."""
         bg = rgb(92, 50, 200) if active else rgb(23, 12, 50)
-        await self.btns[1].fill_rgb(*((92, 50, 200) if active
-                                       else (23, 12, 50)))
+        await self.btns[1].fill(bg)
         await self.draw_btn_border(1, rgb(92, 50, 200))
         label = "<  PREV"
         lx = config.BTN_W // 2 - len(label) * 4
@@ -325,8 +324,7 @@ class DisplayManager:
     async def show_next_indicator(self, active: bool = False):
         """Draw NEXT → on BTN-3 (bottom-right in the 2x2 layout). active=True when pressed."""
         bg = rgb(30, 180, 60) if active else rgb(7, 45, 15)
-        await self.btns[3].fill_rgb(*((30, 180, 60) if active
-                                       else (7, 45, 15)))
+        await self.btns[3].fill(bg)
         await self.draw_btn_border(3, rgb(30, 180, 60))
         label = "NEXT  >"
         lx = config.BTN_W // 2 - len(label) * 4

@@ -48,7 +48,7 @@ import random
 import config
 from core.game_base import BaseGame, GameResult, shuffle
 from core.display_manager import (rgb, WHITE, YELLOW, RED, GREEN, BLUE,
-                                   CYAN, MAGENTA, ORANGE, DARK)
+                                   CYAN, MAGENTA, DARK)
 from drivers import flash_assets
 
 # ── Content ──────────────────────────────────────────────────────
