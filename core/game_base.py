@@ -1,11 +1,12 @@
 # core/game_base.py — Button Blasters
 # BaseGame — abstract base class every game must subclass.
 #
-# Button ID reference for game code:
-#   0 = SCREEN-0 / BTN-0  (PREV ← in menu, context action in game)
-#   1 = SCREEN-1 / BTN-1  (context action)
-#   2 = SCREEN-2 / BTN-2  (context action)
-#   3 = SCREEN-3 / BTN-3  (NEXT → in menu, context action in game)
+# Button ID reference for game code — physical layout is a 2x2 matrix
+# (0|2 top row, 1|3 bottom row):
+#   0 = SCREEN-0 / BTN-0  (top-left,    context action in game)
+#   1 = SCREEN-1 / BTN-1  (bottom-left, PREV ← in menu, context action in game)
+#   2 = SCREEN-2 / BTN-2  (top-right,   context action in game)
+#   3 = SCREEN-3 / BTN-3  (bottom-right, NEXT → in menu, context action in game)
 #   4 = BACK/HOME          (always quits game / returns to menu)
 #
 # To add a new game:
@@ -14,14 +15,32 @@
 #   3. Register in games/registry.py
 
 import asyncio
+import random
+import config
+
+
+def shuffle(lst):
+    # MicroPython's random has choice() but not shuffle(); Fisher-Yates.
+    # Shared here since every game that picks a random subset needs it.
+    for i in range(len(lst) - 1, 0, -1):
+        j = random.randint(0, i)
+        lst[i], lst[j] = lst[j], lst[i]
 
 
 class GameResult:
-    def __init__(self, score=0, stars=0, completed=False, high_score=False):
+    def __init__(self, score=0, stars=0, completed=False, high_score=False,
+                 time_s=None, new_best_time=False):
         self.score      = score
         self.stars      = stars
         self.completed  = completed
         self.high_score = high_score
+        # time_s: seconds to finish, only meaningful for games that define
+        # a "clean run" worth timing (e.g. Match It! only records one on a
+        # perfect MAX_SCORE round-set) — None means "not applicable/not a
+        # qualifying run", not "zero time". new_best_time is set by
+        # AppKernel._save_result() the same way high_score already is.
+        self.time_s        = time_s
+        self.new_best_time = new_best_time
 
 
 class BaseGame:
@@ -52,17 +71,20 @@ class BaseGame:
                              # (e.g. total matches) so stars scale to it instead
                              # of the flat fallback below.
 
-    def __init__(self, display, audio, leds, buttons, assets_mgr):
-        self.display  = display
-        self.audio    = audio
-        self.leds     = leds
-        self.buttons  = buttons
-        self.assets   = assets_mgr
-        self.score    = 0
-        self.lives    = 3
-        self.level    = 1
-        self._running = False
-        self._quit    = False
+    def __init__(self, display, audio, leds, buttons, assets_mgr,
+                 best_score=0, best_time_s=None):
+        self.display      = display
+        self.audio        = audio
+        self.leds         = leds
+        self.buttons      = buttons
+        self.assets       = assets_mgr
+        self.score        = 0
+        self.lives        = 3
+        self.level        = 1
+        self.best_score   = best_score      # persisted high score, at game start
+        self.best_time_s  = best_time_s     # persisted best clean-run time, if any
+        self._running     = False
+        self._quit        = False
 
     # ── Required overrides ───────────────────────────────────────
 
@@ -103,6 +125,19 @@ class BaseGame:
         """Block until a screen tap. Returns (x, y)."""
         return await self.buttons.get_tap()
 
+    async def wait_or_timeout_back(self, coro):
+        """Await coro (an end-screen's wait-for-choice call) but return
+        "back" automatically after config.GAME_RETURN_IDLE_S of no input,
+        so a finished round-set doesn't sit waiting forever if the player
+        walked away. Deliberately for END-SCREEN waits only -- call sites
+        are each game's own _end_screen(), never anything mid-play.
+        Interrupting active play would be disruptive in a way a "Play
+        again?" prompt nobody's answering just isn't."""
+        try:
+            return await asyncio.wait_for(coro, config.GAME_RETURN_IDLE_S)
+        except asyncio.TimeoutError:
+            return "back"
+
     async def wait_tap_or_button(self):
         """Block until tap OR screen button press."""
         return await self.buttons.get_press_or_tap()
@@ -140,6 +175,22 @@ class BaseGame:
             self.leds.start_effect(self.leds.level_up())
         await self.audio.play_voice("level_up.wav", wait=True)
 
+    async def announce_round_complete(self):
+        """End-of-round-set cheer. Call this once from the game's own end
+        screen, after the result is drawn, so the cue lands with "you
+        finished" rather than with "you're leaving" (that used to be played
+        by the kernel after the player chose to exit back to the carousel).
+        Compares against best_score (persisted at game start, and bumped
+        in-memory on 'play again' loops) so a beaten high score is caught
+        on every round-set, not just the final one before quitting."""
+        if not (self.audio and self.audio.ready):
+            return
+        if self.score > self.best_score:
+            self.best_score = self.score
+            await self.audio.play_voice("new_high_score.wav", wait=True)
+        else:
+            await self.audio.play_voice("well_done.wav", wait=True)
+
     async def show_game_over(self):
         if self.leds.ready:
             self.leds.start_effect(self.leds.pulse(150, 0, 0))
@@ -148,13 +199,35 @@ class BaseGame:
                                        f"Score: {self.score}")
         await asyncio.sleep_ms(2000)
 
+    # Custom draw, not display.show_splash() — that helper's scale is fixed
+    # (title=2) and shared by every splash call site in the app; bumping it
+    # there would resize every other splash too. The countdown wants each
+    # number (and GO!) to fill most of the screen. Value lives in
+    # config.COUNTDOWN_TEXT_SCALE — shared with
+    # core/display_manager.py's warm_text_scratch(), which pre-warms the
+    # buffer this size renders into. Change it there, not here, so the two
+    # can't silently desync (see that config entry for the RAM history).
+    _COUNTDOWN_SCALE = config.COUNTDOWN_TEXT_SCALE
+
+    async def _show_countdown_text(self, text, bg_color):
+        s = self._COUNTDOWN_SCALE
+        await self.display.fill_main(bg_color)
+        cx = config.MAIN_W // 2 - len(text) * 4 * s
+        cy = config.MAIN_H // 2 - 4 * s
+        await self.display.text_main(text, cx, cy, color=0xFFFF,
+                                     bg=bg_color, scale=s)
+
     async def countdown(self, from_n: int = 3):
         for n in range(from_n, 0, -1):
-            await self.display.show_splash(str(n), bg_color=0x18C3)
+            # Sound BEFORE the render: play_sfx is fire-and-forget, so this
+            # costs nothing but removes the full-screen fill + text render
+            # as latency before each number's callout even starts — matters
+            # most in the app's single most rhythm-sensitive moment.
             await self.audio.play_sfx(f"count_{n}.wav")
+            await self._show_countdown_text(str(n), 0x18C3)
             await asyncio.sleep_ms(800)
-        await self.display.show_splash("GO!", bg_color=0x0320)
         await self.audio.play_sfx("go.wav")
+        await self._show_countdown_text("GO!", 0x0320)
         await asyncio.sleep_ms(500)
 
     def _make_result(self) -> GameResult:

@@ -3,18 +3,29 @@
 #
 # WHAT THIS IS
 #   Paints full-screen illustrated scenes (My Big Day Out, Garden Grow,
-#   Magic Bakery, Shadow Match) that are too large to hold as a full
-#   framebuffer (480x320 RGB565 = 300KB won't fit). It streams the scene to
-#   the panel in 480x32 strips ("bands"), converting RGB565 -> RGB666 with the
-#   viper band converter and writing each band under the hard-won RAMWR/CS
-#   rule. Shape Match and the menus keep their existing fill+blit path -- this
-#   is ONLY for the illustrated full-screen scenes.
+#   Magic Bakery, Shadow Match, Star Bonk's board) that are too large to hold
+#   as a full framebuffer (480x320 RGB565 = 300KB won't fit). It streams the
+#   scene to the panel in 480x16 strips ("bands"), converting RGB565 -> RGB666
+#   with the viper band converter and writing each band under the hard-won
+#   RAMWR/CS rule. Shape Match and the menus keep their existing fill+blit
+#   path -- this is ONLY for the illustrated full-screen scenes.
 #
-# MEASURED BUDGET (test_12_boot_ram.py, post-boot v3.0)
-#   446KB MicroPython heap; ~352KB free / 187KB largest-contiguous; 47% frag.
-#   STRIP_H=32 + SD double-buffer (150KB) seats with 202KB to spare. Verified.
+# MEASURED BUDGET -- TRUST WITH CAUTION
+#   test_12_boot_ram.py measured 446KB heap, ~352KB free / 187KB
+#   largest-contiguous, 47% frag, IMMEDIATELY POST-BOOT, and called a
+#   STRIP_H=32 (150KB) pool "verified" there. That measurement is real but
+#   was misleading for this pool's actual usage: Star Bonk's load() (the
+#   first real caller) doesn't run at boot, it runs after menu carousel
+#   rendering, LED effects, and a Tier B asset install have all churned the
+#   heap -- and it failed to seat there TWICE on real hardware (~205-211KB
+#   free, but no single ~45KB contiguous block), even after fixing an
+#   allocation-order bug in games/bonk/game.py's load(). STRIP_H is now 16
+#   (75KB pool, 22.5KB largest single block) specifically because "verified
+#   at boot" did not mean "verified where it's actually used" -- re-measure
+#   at the ACTUAL call site if you're validating a heap budget claim here,
+#   not at boot.
 #
-# DESIGN (confirmed with Robert)
+# DESIGN
 #   * StripRenderer is always alive but holds NO big buffers at rest.
 #   * StripBufferPool is a scoped RAII resource: gc.collect() then allocate
 #     hardest-first (2x 45KB RGB666, then 2x 30KB RGB565), HARD-FAIL with a
@@ -48,16 +59,61 @@ import gc
 import asyncio
 import micropython
 from micropython import const
+import config
 
-# --- geometry / freqs (import these from config on the real build) --------
-MAIN_W       = const(480)
-MAIN_H       = const(320)
-STRIP_H      = const(32)               # 10 even bands for a 320-row screen
-DISPLAY_FREQ = const(10_000_000)       # confirmed stable on breadboard
-SD_FREQ      = const(400_000)          # breadboard SD ceiling (EIO above 1.32MHz)
+# --- geometry / freqs, sourced from config (single source of truth) -------
+MAIN_W       = config.MAIN_W
+MAIN_H       = config.MAIN_H
+STRIP_H      = const(8)                # compositing granularity -- single
+                                        # source of truth; core/sprite_engine.py
+                                        # imports this rather than redefining
+                                        # it.
+                                        #
+                                        # History: 32 -> 16 -> 8, each step
+                                        # forced by a CONFIRMED on-hardware
+                                        # MemoryError, not preemptive tuning.
+                                        # 32 (150KB pool, 45KB largest block)
+                                        # failed even after fixing load()'s
+                                        # allocation order. 16 (75KB pool,
+                                        # 22.5KB largest block) ALSO failed on
+                                        # a later attempt in the same
+                                        # power-on session (222KB free
+                                        # overall, but no 22.5KB contiguous
+                                        # run). 8 (37.5KB pool, 11.25KB
+                                        # largest block) is the next step in
+                                        # the same lever, at ~4x the original
+                                        # strip count (40 vs 10 for a full
+                                        # 320-row repaint) -- not yet
+                                        # bench-confirmed either way.
+                                        #
+                                        # This recurring pattern -- same
+                                        # class of failure resurfacing after
+                                        # each halving -- suggests the REAL
+                                        # fix may be structural, not size:
+                                        # MainScreenAdapter.open()/close()
+                                        # allocates and frees this pool once
+                                        # per Bonk game SESSION (not once per
+                                        # boot), so repeated play across one
+                                        # power-on period churns the heap
+                                        # with same-shape alloc/free cycles a
+                                        # non-compacting allocator can't
+                                        # perfectly reclaim. If STRIP_H=8
+                                        # still fails, the next lever isn't a
+                                        # smaller buffer -- it's making this
+                                        # pool persistent (seated once,
+                                        # module-level, like
+                                        # flash_assets.arena already is)
+                                        # instead of per-session. That's a
+                                        # bigger architectural change
+                                        # (permanent heap reservation whether
+                                        # or not Bonk is played) and hasn't
+                                        # been applied here -- confirm
+                                        # STRIP_H=8 is insufficient first.
+DISPLAY_FREQ = config.SPI_FREQ_DISPLAY
+SD_FREQ      = config.SPI_FREQ_SD_DATA
 
-RGB666_STRIP = const(MAIN_W * STRIP_H * 3)   # 46,080 B  (wire format)
-RGB565_STRIP = const(MAIN_W * STRIP_H * 2)   # 30,720 B  (SD source strip)
+RGB666_STRIP = MAIN_W * STRIP_H * 3   # 46,080 B  (wire format)
+RGB565_STRIP = MAIN_W * STRIP_H * 2   # 30,720 B  (SD source strip)
 
 # ILI9488 commands
 _CASET = const(0x2A)

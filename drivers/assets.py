@@ -27,13 +27,10 @@ _SD_MOUNT = "/sd"
 _IMG_ROOT = _SD_MOUNT + "/images"
 _AUD_ROOT = _SD_MOUNT + "/audio"
 
-# Confirmed-working SD data-transfer rate. NOTE: this deliberately does
-# NOT use config.SPI_FREQ_SD_DATA (10MHz) — that value is aspirational
-# for a future soldered board. On the current breadboard build, 1.32MHz
-# (the sdcard.py default) and 10MHz both throw EIO on readblocks; 400kHz
-# is the rate test_sd_card.py actually passed at. Revisit once off
-# breadboard.
-_SD_DATA_BAUD = 400_000
+# SD data-transfer rate comes from config.SPI_FREQ_SD_DATA (400kHz —
+# the rate test_sd_card.py passed at; 1.32MHz+ throws EIO on this
+# breadboard; bump the config value on the soldered board).
+_SD_DATA_BAUD = config.SPI_FREQ_SD_DATA
 
 # Other CS pins on the shared SPI0 bus. Held HIGH before SD init so no
 # display controller drives the bus during the SD handshake (bus
@@ -53,17 +50,15 @@ class AssetManager:
         self._cache       = {}
         self._cache_limit = 32_000
         self._sd_mounted  = False
-        self._icon_block  = None      # shared contiguous image-load block
-        self._icon_stride = 0
 
     def mount_sd(self) -> bool:
         if config.SD_DEFERRED:
             print("[assets] SD deferred — separate breakout needed")
             return False
+        from drivers.spi_bus import spi_bus
         try:
             from sdcard import SDCard
             from machine import SPI
-            from drivers.spi_bus import spi_bus
 
             # Safety: ensure no other device on the shared SPI0 bus is
             # selected during SD init. Display drivers already idle CS
@@ -85,26 +80,38 @@ class AssetManager:
             sd = SDCard(sd_spi, cs, baudrate=_SD_DATA_BAUD)
             os.mount(sd, _SD_MOUNT)
 
-            # Restore the shared bus to display speed for the displays.
-            #
-            # SHARED-BUS HAZARD (known, not yet handled): SD and all five
-            # displays share SPI0 at different speeds (SD=400kHz,
-            # displays=10MHz). sdcard.py sets its speed once at init and
-            # does NOT re-assert it per read, so if a display transaction
-            # reconfigures the bus to 10MHz between two SD reads, the next
-            # SD read can fail with EIO. Harmless today (no game interleaves
-            # SD reads with display draws — Shape Match is solid-colour),
-            # but must be solved before any game streams SD assets mid-draw
-            # (e.g. My Big Day Out). Fix will be per-transaction speed
-            # re-assertion around SD reads.
-            spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)
-
             self._sd_mounted = True
             print("[assets] SD mounted at", _SD_MOUNT, "@ 400kHz data")
             return True
         except Exception as e:
             print(f"[assets] SD mount failed: {e}")
             return False
+        finally:
+            # Restore the shared bus to display speed for the displays —
+            # on EVERY exit, not just success. sd_spi above is a SEPARATE
+            # machine.SPI(SPI_ID, ...) instance from spi_bus.spi — same
+            # physical peripheral, but SDCard's own init_spi() call on it
+            # changes the real clock to 400kHz without spi_bus's cache
+            # knowing. invalidate() so set_freq() below doesn't wrongly
+            # skip the reinit because the (stale) cache happens to already
+            # say SPI_FREQ_DISPLAY.
+            #
+            # This has to be a finally, not a tail call after os.mount():
+            # when the SD card isn't found, SDCard()/os.mount() raises and
+            # a tail call is skipped entirely, leaving the bus stranded at
+            # SD speed — every display draw after a failed mount runs at
+            # 400kHz instead of 10MHz (the slow-fail-screen symptom).
+            #
+            # SHARED-BUS RULE: SD and all five displays share SPI0 at
+            # different speeds (SD=400kHz, displays=10MHz), and sdcard.py
+            # does NOT re-assert its speed per read. Every SD access after
+            # a successful mount must therefore run inside a bracketed
+            # window — spi_bus.raw(config.SPI_FREQ_SD_DATA) or an explicit
+            # set_freq()/finally pair — as read_file(), game_cache, audio,
+            # and the kernel's score I/O all do. A bare open() on /sd runs
+            # at 10MHz and EIOs (or collides with a display transaction).
+            spi_bus.invalidate()
+            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
 
     def build_index(self):
         if not self._sd_mounted:
@@ -124,35 +131,6 @@ class AssetManager:
                         self._index[entry] = full
         except OSError:
             pass
-
-    # ── Shared icon-load pool ────────────────────────────────────
-    # One contiguous block, allocated ONCE at boot (freshest heap). Icon games
-    # borrow memoryview slices instead of each allocating six buffers at
-    # game-load, where the heap is fragmented and six separate 28.8KB requests
-    # intermittently fail to place. Sized for the worst icon game: 6x120x120.
-    def alloc_icon_pool(self, slots=6, w=120, h=120):
-        if self._icon_block is not None:
-            return
-        import gc
-        gc.collect()
-        self._icon_stride = w * h * 2
-        self._icon_block  = bytearray(self._icon_stride * slots)
-        gc.collect()
-        print("[assets] icon pool: %d slots x %d B = %d B"
-              % (slots, self._icon_stride, len(self._icon_block)))
-
-    def borrow_icons(self, count, w, h):
-        # `count` memoryview slices of w*h*2 into the shared block. Only one
-        # game runs at a time, so sequential borrows are safe. Hard-fails.
-        need = w * h * 2
-        if self._icon_block is None:
-            self.alloc_icon_pool(count, w, h)     # lazy fallback (less fresh)
-        slots = len(self._icon_block) // need
-        if count > slots:
-            raise MemoryError("icon pool too small: need %d x %dB, holds %d"
-                              % (count, need, slots))
-        blk = memoryview(self._icon_block)
-        return [blk[i * need:(i + 1) * need] for i in range(count)]
 
     @staticmethod
     def image_size(filename: str):
@@ -236,7 +214,7 @@ class AssetManager:
         from drivers.spi_bus import spi_bus
         alloc = into is None
         try:
-            spi_bus.spi.init(baudrate=_SD_DATA_BAUD)             # 400kHz for SD
+            spi_bus.set_freq(_SD_DATA_BAUD)                       # 400kHz for SD
             if alloc:
                 into = bytearray(os.stat(path)[6])
             mv   = memoryview(into)
@@ -249,7 +227,7 @@ class AssetManager:
                         break
                     off += n
         finally:
-            spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)   # restore 10MHz
+            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)             # restore 10MHz
         return into if alloc else off
 
     def evict_cache(self, prefix: str = None):

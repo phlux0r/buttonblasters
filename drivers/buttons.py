@@ -5,11 +5,12 @@
 # The MCP23008 is polled every BTN_POLL_MS over I2C (shared bus
 # with FT6236 touch at 0x38). MCP is at 0x20.
 #
-# Button IDs:
-#   0 = SCREEN-0  (BTN-0 display — PREV ← in menu)
-#   1 = SCREEN-1  (BTN-1 display — game preview)
-#   2 = SCREEN-2  (BTN-2 display — game preview)
-#   3 = SCREEN-3  (BTN-3 display — NEXT → in menu)
+# Button IDs — physical layout is a 2x2 matrix (0|2 top row, 1|3 bottom
+# row), left column {0,1} = "previous", right column {2,3} = "next":
+#   0 = SCREEN-0  (BTN-0 display, top-left    — game preview, idx-1)
+#   1 = SCREEN-1  (BTN-1 display, bottom-left — PREV ← in menu)
+#   2 = SCREEN-2  (BTN-2 display, top-right   — game preview, idx+1)
+#   3 = SCREEN-3  (BTN-3 display, bottom-right — NEXT → in menu)
 #   4 = BACK/HOME
 #
 # Touch events injected into same queue via attach_touch():
@@ -43,11 +44,25 @@ from drivers.touch import TOUCH_TAP, TOUCH_LONG_PRESS, TOUCH_SWIPE
 
 
 class _SimpleQueue:
-    """Minimal async-compatible queue for MicroPython."""
+    """Minimal async-compatible queue for MicroPython.
+
+    Also the one true choke point every input event passes through --
+    physical button presses (ButtonManager._post) and touch events
+    (TouchDriver._post, sharing this same queue instance via
+    attach_touch()) both land here, whether they're consumed by the
+    menu's own event loop, a game's, or an end screen's. last_put_ms
+    tracks activity centrally for exactly that reason: any call site
+    that reads its OWN "last input" timestamp instead (like
+    AppKernel used to) silently misses every event handled inside a
+    nested loop it doesn't own -- confirmed on hardware as menu
+    navigation and in-game play never resetting the idle-dim timer at
+    all, only actually launching a game or finishing one did.
+    """
     def __init__(self, maxsize=32):
-        self._buf     = []
-        self._maxsize = maxsize
-        self._ev      = asyncio.Event()
+        self._buf        = []
+        self._maxsize    = maxsize
+        self._ev         = asyncio.Event()
+        self.last_put_ms = time.ticks_ms()
 
     def empty(self):
         return len(self._buf) == 0
@@ -58,6 +73,7 @@ class _SimpleQueue:
     def put_nowait(self, item):
         if not self.full():
             self._buf.append(item)
+            self.last_put_ms = time.ticks_ms()
             self._ev.set()
 
     def get_nowait(self):
@@ -69,6 +85,7 @@ class _SimpleQueue:
         while self.full():
             await asyncio.sleep_ms(5)
         self._buf.append(item)
+        self.last_put_ms = time.ticks_ms()
         self._ev.set()
 
     async def get(self):
@@ -84,9 +101,9 @@ BTN_SCREEN_2 = 2
 BTN_SCREEN_3 = 3
 BTN_BACK     = 4
 
-# Menu role aliases
-BTN_PREV = BTN_SCREEN_0   # ← shown on BTN-0 display
-BTN_NEXT = BTN_SCREEN_3   # → shown on BTN-3 display
+# Menu role aliases — see the 2x2 layout note above
+BTN_PREV = BTN_SCREEN_1   # ← shown on BTN-1 display (bottom-left)
+BTN_NEXT = BTN_SCREEN_3   # → shown on BTN-3 display (bottom-right)
 
 # MCP23008 registers
 _IODIR    = 0x00
@@ -260,9 +277,9 @@ class ButtonManager:
         """
         Block until a menu-relevant event.
         Returns (action, data):
-          "prev"   — BTN-0 (PREV ←)
-          "next"   — BTN-3 (NEXT →)
-          "select" — BTN-1 or BTN-2, data = btn id
+          "prev"   — BTN-1 (PREV ←, bottom-left)
+          "next"   — BTN-3 (NEXT →, bottom-right)
+          "select" — BTN-0 or BTN-2 (game preview), data = btn id
           "back"   — BACK/HOME
           "tap"    — screen tap, data = (x, y)
           "swipe"  — swipe gesture, data = direction string
@@ -282,12 +299,30 @@ class ButtonManager:
     # ── Utility ───────────────────────────────────────────────────
 
     @property
+    def last_input_ms(self):
+        """time.ticks_ms() of the most recent event through the shared
+        queue — physical button OR touch, regardless of which loop
+        consumed it. The one central source of truth for idle tracking;
+        see _SimpleQueue's docstring for why this replaced callers each
+        tracking their own "last input" timestamp."""
+        return self._queue.last_put_ms if self._queue else time.ticks_ms()
+
+    @property
     def touch_pos(self):
         return self._touch.pos if self._touch else None
 
     @property
     def touch_gesture(self):
         return self._touch.gesture if self._touch else None
+
+    @property
+    def touch_down(self):
+        """True while a finger is currently on the glass. Live press-state,
+        unlike TOUCH_TAP (queue event, fires only on release and is dropped
+        entirely on a long hold or excess travel) — lets a caller poll for
+        a hit the instant a touch lands, instead of waiting for a clean
+        lift."""
+        return self._touch._touch_down if self._touch else False
 
     def hit_test(self, x: int, y: int, rect: tuple) -> bool:
         rx, ry, rw, rh = rect

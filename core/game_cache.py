@@ -20,7 +20,7 @@ from drivers import flash_assets
 import config
 
 _SAFETY_MARGIN = 8 * 1024   # leave headroom, don't run littlefs to the wire
-_SD_DATA_BAUD  = 400_000    # must match drivers/assets.py's _SD_DATA_BAUD
+_SD_DATA_BAUD  = config.SPI_FREQ_SD_DATA
 _COPY_CHUNK = 4096   # one reusable buffer for the whole install() call
 
 def _free_bytes():
@@ -109,6 +109,14 @@ async def install(game_id):
     for sd_path, size in _walk_sd(sd_root):
         cache_path = "/assets" + sd_path[len("/sd/assets"):]
         if _free_bytes() - size < _SAFETY_MARGIN:
+            # Which file, not just a count -- a skipped file falls back to
+            # per-strip SD streaming at 400kHz every time it's shown
+            # (see open_background()'s fallback path), which is dramatically
+            # slower than a flash read. Without the path here, that shows up
+            # as "one specific screen is slow" with no way to tell which
+            # asset is actually the cause short of guessing from file sizes.
+            print("[game_cache] %s: skipped (low space, %dB needed): %s"
+                  % (game_id, size, cache_path))
             skipped += 1
             continue
         try:
@@ -136,11 +144,11 @@ class _SDBackground(flash_assets.Background):
     speed-management exactly, just applied per-strip instead of whole-file."""
 
     def read_strip(self, i, buf):
-        spi_bus.spi.init(baudrate=_SD_DATA_BAUD)
+        spi_bus.set_freq(_SD_DATA_BAUD)
         try:
             return super().read_strip(i, buf)
         finally:
-            spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)
+            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
 
 
 def open_background(path):
@@ -152,9 +160,9 @@ def open_background(path):
         return flash_assets.Background(path)
     except OSError:
         sd_path = "/sd" + path
-        spi_bus.spi.init(baudrate=_SD_DATA_BAUD)
+        spi_bus.set_freq(_SD_DATA_BAUD)
         try:
             bg = _SDBackground(sd_path)     # header+table read, also bracketed
         finally:
-            spi_bus.spi.init(baudrate=config.SPI_FREQ_DISPLAY)
+            spi_bus.set_freq(config.SPI_FREQ_DISPLAY)
         return bg

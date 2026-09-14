@@ -1,6 +1,13 @@
 # tests/test_06_integration.py — Button Blasters
 # TEST 6 — Full integration test
 #
+# HISTORICAL: predates both the MCP23008 button expander (buttons below
+# are wired directly to Pico GPIOs here, not MCP23008 GP0-4 — see
+# config.py for the current wiring) and the 2x2 button-matrix shell
+# layout (BTN-0/BTN-3 PREV/NEXT below reflects the old linear layout —
+# current roles are BTN-1=PREV, BTN-3=NEXT, see HARDWARE_NOTES.md and
+# core/menu.py). Left as-is as a record of that bring-up milestone.
+#
 # Confirmed pin assignments:
 #   SPI:    SCK=GP18  MOSI=GP19  MISO=GP4
 #   Main:   CS=GP6   DC=GP12  RST=GP17  LED=3.3V direct

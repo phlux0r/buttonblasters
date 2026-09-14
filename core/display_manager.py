@@ -3,17 +3,17 @@
 #
 # Display layout:
 #   main      ILI9488 4.0" 320×480  — game/menu primary screen
-#   btns[0]   ST7789  1.69" 240×300 — PREV ← in menu / game context
-#   btns[1]   ST7789  1.69" 240×300 — game preview / context action
-#   btns[2]   ST7789  1.69" 240×300 — game preview / context action
-#   btns[3]   ST7789  1.69" 240×300 — NEXT → in menu / game context
+#   btns[0]   ST7789  1.69" 280×240 landscape — PREV ← in menu / game context
+#   btns[1]   ST7789  1.69" 280×240 landscape — game preview / context action
+#   btns[2]   ST7789  1.69" 280×240 landscape — game preview / context action
+#   btns[3]   ST7789  1.69" 280×240 landscape — NEXT → in menu / game context
 #
 # Games use this class — never the low-level drivers directly.
 
 import asyncio
 import framebuf
 import micropython
-from drivers.display import ILI9488, ST7789
+from drivers.display import ILI9488, ST7789, set_btn_backlight
 from drivers.assets import assets
 from drivers import flash_assets
 from core import game_cache
@@ -32,7 +32,7 @@ ORANGE  = 0xFC60
 PURPLE  = 0x781F
 DARK    = 0x18C3
 
-# Menu nav colours for BTN-0 (PREV) and BTN-3 (NEXT)
+# Menu nav colours for BTN-1 (PREV) and BTN-3 (NEXT)
 PREV_COLOR = 0x4810   # dark purple tint
 NEXT_COLOR = 0x0B60   # dark green tint
 
@@ -41,18 +41,100 @@ def rgb(r: int, g: int, b: int) -> int:
     """Convert 0-255 RGB to RGB565."""
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
+# ── Text rasteriser ──────────────────────────────────────────────
+# Text is drawn once at scale 1 with framebuf (LE RGB565), then scaled
+# into a BE RGB565 output buffer by the viper function below — both blit
+# paths (ILI9488 rgb565_to_666 and the ST7789 direct stream) read
+# big-endian, so the scaler emits BE directly. The old per-pixel Python
+# scaling loop was slow AND allocated a fresh buffer every call (the
+# same heap-churn class the sprite arena exists to prevent); these two
+# module-level scratch buffers are allocated once and grow only if a
+# larger string ever appears.
+
+_TXT_BASE = bytearray(0)   # scale-1 LE framebuf backing
+_TXT_OUT  = bytearray(0)   # scaled BE output
+
+
+def _txt_buffers(base_bytes, out_bytes):
+    global _TXT_BASE, _TXT_OUT
+    if len(_TXT_BASE) < base_bytes or len(_TXT_OUT) < out_bytes:
+        import gc
+        gc.collect()
+        if len(_TXT_BASE) < base_bytes:
+            _TXT_BASE = bytearray(base_bytes)
+        if len(_TXT_OUT) < out_bytes:
+            _TXT_OUT = bytearray(out_bytes)
+    return _TXT_BASE, _TXT_OUT
+
+
+def warm_text_scratch():
+    """Force _TXT_BASE/_TXT_OUT to grow to their largest-known-use size NOW
+    (call at boot, right after flash_assets.init(), same freshest-heap
+    argument as that arena), instead of growing lazily the first time some
+    game asks for it. Confirmed on hardware: BaseGame.countdown()'s "GO!"
+    at config.COUNTDOWN_TEXT_SCALE is the single biggest text draw in the
+    app, and it was the first caller ever to need a buffer that size --
+    which happened mid-Bonk-session, well after load() had already seated
+    the strip pool/legend arena/sprite sheets, and failed with a bare
+    MemoryError. Scale MUST match core/game_base.py's actual render (both
+    read config.COUNTDOWN_TEXT_SCALE — see that config entry) or this
+    pre-warm doesn't cover the real draw. Never touches a display."""
+    _render_text_be("GO!", WHITE, BLACK, config.COUNTDOWN_TEXT_SCALE, False)
+
+
 @micropython.viper
-def _fb_le_to_be(buf: ptr8, n_bytes: int):
-    # framebuf.RGB565 is little-endian on RP2350; both blit paths (the ILI9488
-    # rgb565_to_666 viper and the ST7789 direct stream) read big-endian, so
-    # swap the byte pairs before blitting or colours come out byte-swapped
-    # (0xEA16 pink -> green). Baked assets are already BE, so they never hit this.
+def _scale_text_be(src: ptr16, sw: int, sh: int,
+                   dst: ptr8, dw: int, s: int, bold: int, bg: int):
+    # Nearest-neighbour scale of LE RGB565 src into BE bytes in dst.
+    # bold=1 smears each glyph pixel one extra output column right
+    # (same look as the old double-draw). dst width dw = sw*s + bold.
+    n = dw * sh * s
+    hi_bg = (bg >> 8) & 0xFF
+    lo_bg = bg & 0xFF
     i = 0
-    while i < n_bytes:
-        t = buf[i]
-        buf[i] = buf[i + 1]
-        buf[i + 1] = t
-        i += 2
+    while i < n:
+        dst[2 * i]     = hi_bg
+        dst[2 * i + 1] = lo_bg
+        i += 1
+    y = 0
+    while y < sh:
+        row = y * sw
+        x = 0
+        while x < sw:
+            px = int(src[row + x])
+            if px != bg:
+                hi = (px >> 8) & 0xFF
+                lo = px & 0xFF
+                bw = s + bold
+                if x * s + bw > dw:
+                    bw = dw - x * s
+                oy = 0
+                while oy < s:
+                    o = ((y * s + oy) * dw + x * s) * 2
+                    ox = 0
+                    while ox < bw:
+                        dst[o]     = hi
+                        dst[o + 1] = lo
+                        o += 2
+                        ox += 1
+                    oy += 1
+            x += 1
+        y += 1
+
+
+def _render_text_be(text, color, bg, scale, bold):
+    """Rasterise `text` and return (BE memoryview, width, height)."""
+    sw = len(text) * 8
+    sh = 8
+    b  = 1 if bold else 0
+    dw = sw * scale + b
+    dh = sh * scale
+    base, out = _txt_buffers(sw * sh * 2, dw * dh * 2)
+    fb = framebuf.FrameBuffer(base, sw, sh, framebuf.RGB565)
+    fb.fill(bg)
+    fb.text(text, 0, 0, color)
+    _scale_text_be(base, sw, sh, out, dw, scale, b, bg)
+    return memoryview(out)[:dw * dh * 2], dw, dh
 
 class DisplayManager:
 
@@ -70,6 +152,12 @@ class DisplayManager:
         for i, d in enumerate(self.btns):
             d.init_blocking()
             print(f"[display] BTN-{i} ST7789 ready")
+
+    def set_btn_backlight(self, on: bool):
+        """Turn the 4 button screens' shared backlight (GP13) on/off. The
+        main ILI9488's backlight has no such control -- it's hardwired to
+        3.3V -- so this is the one real display-power lever available."""
+        set_btn_backlight(on)
 
     # ── Fill helpers ─────────────────────────────────────────────
 
@@ -110,21 +198,44 @@ class DisplayManager:
                            w: int, h: int, x=0, y=0):
         await self.btns[idx].blit_rgb565(memoryview(buf), x, y, w, h)
 
-    async def paint_main_bg(self, path):
-        """Stream a BE (kind 1) 480x320 background from flash to the main
-        display, one strip at a time via an arena-borrowed buffer. Returns
-        True if painted, False on any error (caller supplies the fallback)."""
+    async def paint_main_bg(self, path, arena=None, x=0, y=0):
+        """Stream a BE (kind 1) background from flash to the main display,
+        one strip at a time via an arena-borrowed buffer. Returns True if
+        painted, False on any error (caller supplies the fallback).
+
+        x, y: top-left placement on the main display. Default (0, 0) paints
+        full-screen exactly as before -- every existing caller is
+        unaffected. A non-zero offset lets a SMALLER image (e.g. a recipe
+        card narrower/shorter than the full 480x320) blit into a sub-region
+        of whatever's already on screen, instead of requiring every bg
+        asset to be a full-screen image.
+
+        arena: bump-arena to borrow the per-strip scratch buffer from.
+        Defaults to the shared flash_assets.arena, which is safe for
+        transient callers (Match It!'s per-round icon reloads, the menu,
+        the boot splash) that don't rely on anything else still being
+        resident there. Pass your OWN persistent arena if your game keeps
+        other data resident in the shared arena across this call —
+        confirmed on hardware as real memory corruption otherwise: Star
+        Bonk keeps its 4 main-screen sprite sheets seated in
+        flash_assets.arena for the whole game session, and this method's
+        unconditional arena.reset()+alloc() (from its own end-screen tile/
+        result paints) was resetting that SAME arena and overwriting the
+        sprites at its START — wizard and goblin (loaded first, in
+        TARGETS order) got corrupted on the second "Play Again" onward;
+        star and mushroom (loaded later, at higher offsets) escaped."""
+        a = arena if arena is not None else flash_assets.arena
         bg = None
         try:
             bg = game_cache.open_background(path)
             if not bg.big_endian:
                 raise ValueError("main bg must be BE (kind 1); got LE: " + path)
-            flash_assets.arena.reset()
-            buf = flash_assets.arena.alloc(bg.w * bg.strip_h * 2)
+            a.reset()
+            buf = a.alloc(bg.w * bg.strip_h * 2)
             for i in range(bg.n_strips):
                 rows = bg.read_strip(i, buf)
                 await self.main.blit_rgb565(
-                    buf[:bg.w * rows * 2], 0, i * bg.strip_h, bg.w, rows)
+                    buf[:bg.w * rows * 2], x, y + i * bg.strip_h, bg.w, rows)
                 await asyncio.sleep_ms(0)
             return True
         except Exception as e:
@@ -133,19 +244,24 @@ class DisplayManager:
         finally:
             if bg is not None:
                 bg.close()
-            flash_assets.arena.reset()
+            a.reset()
 
-    async def paint_btn_bg(self, idx, path):
-        """Stream a BE (kind 1) 240x300 background from flash to button screen
+    async def paint_btn_bg(self, idx, path, arena=None):
+        """Stream a BE (kind 1) 280x240 background from flash to button screen
         idx, one strip at a time via an arena-borrowed buffer. Returns True if
-        painted, False on any error (caller supplies the fallback)."""
+        painted, False on any error (caller supplies the fallback).
+
+        arena: see paint_main_bg() — same shared-arena-corruption hazard,
+        same fix (pass your own persistent arena if you keep other data
+        resident in the shared one)."""
+        a = arena if arena is not None else flash_assets.arena
         bg = None
         try:
             bg = game_cache.open_background(path)
             if not bg.big_endian:
                 raise ValueError("btn bg must be BE (kind 1); got LE: " + path)
-            flash_assets.arena.reset()
-            buf = flash_assets.arena.alloc(bg.w * bg.strip_h * 2)
+            a.reset()
+            buf = a.alloc(bg.w * bg.strip_h * 2)
             for i in range(bg.n_strips):
                 rows = bg.read_strip(i, buf)
                 await self.blit_btn_buf(
@@ -158,71 +274,39 @@ class DisplayManager:
         finally:
             if bg is not None:
                 bg.close()
-            flash_assets.arena.reset()
+            a.reset()
 
     # ── Text rendering (8×8 framebuf font) ──────────────────────
 
     async def text_main(self, text: str, x: int, y: int,
                         color=WHITE, bg=BLACK, scale=2, bold=False):
-        char_w = 8 * scale
-        char_h = 8 * scale
-        bw     = len(text) * char_w + (1 if bold else 0)
-        fb_buf = bytearray(bw * char_h * 2)
-        fb     = framebuf.FrameBuffer(fb_buf, bw, char_h, framebuf.RGB565)
-        fb.fill(bg)
-        for ci, ch in enumerate(text):
-            tx = ci * char_w
-            if scale == 1:
-                fb.text(ch, tx, 0, color)
-                if bold:
-                    fb.text(ch, tx + 1, 0, color)
-            else:
-                tmp = bytearray(8 * 8 * 2)
-                tfb = framebuf.FrameBuffer(tmp, 8, 8, framebuf.RGB565)
-                tfb.fill(bg)
-                tfb.text(ch, 0, 0, color)
-                for row in range(8):
-                    for col in range(8):
-                        px = tfb.pixel(col, row)
-                        if px == bg:
-                            continue
-                        for sr in range(scale):
-                            for sc in range(scale):
-                                fb.pixel(tx + col*scale + sc, row*scale + sr, px)
-                                if bold:
-                                    fb.pixel(tx + col*scale + sc + 1,
-                                             row*scale + sr, px)
-        _fb_le_to_be(fb_buf, len(fb_buf))
-        await self.main.blit_rgb565(memoryview(fb_buf), x, y, bw, char_h)
+        if not text:
+            return
+        mv, w, h = _render_text_be(text, color, bg, scale, bold)
+        await self.main.blit_rgb565(mv, x, y, w, h)
 
     async def text_btn(self, idx: int, text: str, x: int, y: int,
                        color=WHITE, bg=BLACK, scale=1):
-        char_w = 8 * scale
-        char_h = 8 * scale
-        bw     = len(text) * char_w
-        fb_buf = bytearray(bw * char_h * 2)
-        fb     = framebuf.FrameBuffer(fb_buf, bw, char_h, framebuf.RGB565)
-        fb.fill(bg)
-        for ci, ch in enumerate(text):
-            fb.text(ch, ci * char_w, 0, color)
-        _fb_le_to_be(fb_buf, len(fb_buf))
-        await self.btns[idx].blit_rgb565(memoryview(fb_buf), x, y, bw, char_h)
+        if not text:
+            return
+        mv, w, h = _render_text_be(text, color, bg, scale, False)
+        await self.btns[idx].blit_rgb565(mv, x, y, w, h)
 
     # ── Menu nav indicators ──────────────────────────────────────
 
     async def show_prev_indicator(self, active: bool = False):
-        """Draw PREV ← on BTN-0. active=True when pressed."""
+        """Draw PREV ← on BTN-1 (bottom-left in the 2x2 layout). active=True when pressed."""
         bg = rgb(92, 50, 200) if active else rgb(23, 12, 50)
-        await self.btns[0].fill_rgb(*((92, 50, 200) if active
+        await self.btns[1].fill_rgb(*((92, 50, 200) if active
                                        else (23, 12, 50)))
-        await self.draw_btn_border(0, rgb(92, 50, 200))
+        await self.draw_btn_border(1, rgb(92, 50, 200))
         label = "<  PREV"
         lx = config.BTN_W // 2 - len(label) * 4
-        await self.text_btn(0, label, max(4, lx),
+        await self.text_btn(1, label, max(4, lx),
                             config.BTN_H // 2 - 4, WHITE, bg, scale=1)
 
     async def show_next_indicator(self, active: bool = False):
-        """Draw NEXT → on BTN-3. active=True when pressed."""
+        """Draw NEXT → on BTN-3 (bottom-right in the 2x2 layout). active=True when pressed."""
         bg = rgb(30, 180, 60) if active else rgb(7, 45, 15)
         await self.btns[3].fill_rgb(*((30, 180, 60) if active
                                        else (7, 45, 15)))
@@ -235,16 +319,26 @@ class DisplayManager:
     # ── UI helpers ───────────────────────────────────────────────
 
     async def draw_btn_border(self, idx: int,
-                               color=WHITE, thickness=6):
-        """Draw a coloured border on a button screen."""
+                               color=WHITE, thickness=6, inset=0, left_extra=0):
+        """Draw a coloured border on a button screen. inset pulls the whole
+        border in from the raw edges -- some button panels visibly crop a
+        few pixels at the physical edge (bezel/mounting), so a caller that
+        sees a border clipped there can pull it in without affecting every
+        other draw_btn_border() call (default inset=0 is the old behaviour).
+        left_extra nudges ONLY the left bar further right, on top of inset --
+        confirmed on-device that every button screen crops a few pixels on
+        its left edge specifically (documents/HARDWARE_NOTES.md), uniform
+        top/bottom/right; this compensates without moving the other 3 sides."""
         d  = self.btns[idx]
         bw = config.BTN_W
         bh = config.BTN_H
         t  = thickness
-        await d.fill(color, 0,    0,    bw, t)
-        await d.fill(color, 0,    bh-t, bw, t)
-        await d.fill(color, 0,    0,    t,  bh)
-        await d.fill(color, bw-t, 0,    t,  bh)
+        x0, y0 = inset, inset
+        w, h = bw - 2 * inset, bh - 2 * inset
+        await d.fill(color, x0,             y0,       w, t)
+        await d.fill(color, x0,             y0+h-t,   w, t)
+        await d.fill(color, x0 + left_extra, y0,       t, h)
+        await d.fill(color, x0+w-t,         y0,       t, h)
 
     async def draw_btn_highlight(self, idx: int, on: bool = True):
         """Yellow border = selected, black = deselected."""

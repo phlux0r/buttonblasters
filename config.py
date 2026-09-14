@@ -3,14 +3,65 @@
 # All values confirmed through hardware bring-up tests 1-11.
 # Do not change pin assignments without re-running bring-up tests.
 
+# ── Core clock ───────────────────────────────────────────────────
+# RP2350 default is 150 MHz. Raising it speeds the viper RGB565→666
+# conversion AND gives the SPI peripheral higher/finer available bus
+# rates (SPI baud is derived by dividing sysclk).
+#
+# ── HOW TO TUNE ──────────────────────────────────────────────────
+#   Default (no overclock):  150_000_000
+#   Safe overclock steps:    200_000_000  → 250_000_000  → 300_000_000
+#   Applied once at boot in main.py. If the board gets flaky (hangs on
+#   boot, USB/REPL drops, random resets), step back down. 200 MHz is a
+#   very safe starting overclock for the RP2350. Tune this and
+#   SPI_FREQ_DISPLAY independently — change one at a time so you know
+#   which one caused any regression.
+MACHINE_FREQ     = 250_000_000
+
 # ── SPI bus (SPI0) ───────────────────────────────────────────────
 SPI_ID           = 0
 PIN_SCK          = 18    # ✓ verified — only valid SCK for SPI0
 PIN_MOSI         = 19    # ✓ verified — only valid MOSI for SPI0
 PIN_MISO         = 4     # ✓ verified
-SPI_FREQ_DISPLAY = 10_000_000
-SPI_FREQ_SD_INIT =    400_000
-SPI_FREQ_SD_DATA = 10_000_000
+
+# Display bus speed. Was 10 MHz (very conservative). The panels can go
+# much faster — raising this is the single biggest draw-speed win, since
+# every fill/blit funnels through this one bus. The display already ran
+# fine at 10 MHz on the current breadboard, so 24 MHz is a safe first step.
+#
+# ── HOW TO TUNE (on the bench, one step at a time) ───────────────────
+#   1. Flash with the current value, then watch ALL FIVE screens during a
+#      menu→game transition and a shape blit.
+#   2. If everything is clean (no garbled pixels, no flicker, no dropouts),
+#      bump to the next step and re-flash:
+#         24_000_000  → 32_000_000  → 40_000_000  → 48_000_000
+#   3. The FIRST value that shows ANY corruption is too high — drop back to
+#      the previous clean step and stop there. That's your ceiling.
+#   4. Ceiling depends on wiring quality: this is a breadboard build (see
+#      the SD ceiling below), so expect the display to top out lower than a
+#      soldered board would. ILI9488 is the limiting panel (~40 MHz on good
+#      wiring); the ST7789s tolerate more (~62 MHz).
+#   NOTE: actual bus rate is quantised — the RP2350 divides sysclk down, so
+#   raising MACHINE_FREQ above gives finer/higher available rates.
+SPI_FREQ_DISPLAY = 48_000_000    # starting step — tune upward per notes above
+
+# SD stays slow and decoupled from the display clock — the shared bus
+# switches frequency per-device (see drivers/spi_bus.py), so a fast display
+# does NOT force a fast SD. Do NOT raise this to match SPI_FREQ_DISPLAY.
+SPI_FREQ_SD_INIT =    400_000    # SD spec's power-up negotiation speed —
+                                  # NOT the breadboard limitation below,
+                                  # leave this one alone regardless of build
+SPI_FREQ_SD_DATA =  10_000_000   # was 400kHz (confirmed breadboard ceiling,
+                                  # EIO at >=1.32MHz) -- now soldered, trying
+                                  # the target this was always aiming for.
+                                  # SPI_FREQ_DISPLAY runs 48MHz clean on this
+                                  # same bus/board, so the wiring itself isn't
+                                  # the limiting factor. NOT yet bench-confirmed
+                                  # at this exact value -- run test_sd_card.py
+                                  # and watch for EIO/"timeout waiting for v2
+                                  # card"; step back down (try 4_000_000, then
+                                  # 1_000_000) if it throws rather than assuming
+                                  # 10MHz is safe untested.
 
 # ── ILI9488 main display (4.0" IPS 320×480) ─────────────────────
 PIN_CS_MAIN  = 6
@@ -24,14 +75,39 @@ ILI9488_MADCTL = 0x28   # landscape. Rotation options (all BGR):
 #   0x48 = portrait (current)      0x28 = landscape
 #   0x88 = portrait flipped        0xE8 = landscape flipped (180° of 0x28)
 
-# ── ST7789 button displays (×4, 1.69" 240×300) ──────────────────
+# ── ST7789 button displays (×4, 1.69" 280×240 landscape) ─────────
+# Ruler-measured on-device 2026-09-06 (tests/test_16_button_edge_probe.py):
+# true visible glass is native columns 20..299 (280 wide), not 0..299
+# (300 wide) as originally assumed. 28/30 top ticks (10px apart) visible,
+# first visible tick at x=20 landing flush against the true left edge;
+# 23/24 left ticks visible, the one miss (y=0) explained by the top-left
+# corner rounding rather than a separate row crop -- no evidence of any
+# row/Y offset needed, this is X-only. A prior attempt at just narrowing
+# BTN_W to 280 (no offset) made it worse, not better: that still starts
+# addressing at column 0, so it neither reaches the true window nor
+# covers it -- needs BOTH the corrected width AND the offset together.
+BTN_COL_OFFSET = 20   # added to every ST7789 _set_window() x0/x1
 PIN_CS_BTN   = (7, 8, 9, 10)
 PIN_DC_BTN   = (2, 11, 14, 21)   # GP2 for BTN-0 (GP5 is DEAD)
 PIN_RST_BTN  = 15                  # shared reset
 PIN_BLK_BTN  = 13                  # MUST be driven HIGH from GPIO
-BTN_W        = 240
-BTN_H        = 300
+BTN_W        = 280
+BTN_H        = 240
 NUM_BTN_SCREENS = 4
+# Per-button MADCTL — NOT uniform. Physical mounting is a 2x2 matrix
+# (0|2 top row, 1|3 bottom row) with the right column (BTN-2/3) mounted
+# physically rotated 180 degrees from the left column (BTN-0/1), for tidy
+# cable routing. Same landscape orientation (MV bit set) either way, but
+# the 180-degree physical rotation must be compensated in software or
+# BTN-2/3 render upside-down/mirrored relative to BTN-0/1.
+#   0xA0 = landscape, confirmed via test_15 for BTN-0/1's mounting.
+#   0x60 = 0xA0 with MY and MX both toggled (0xA0 ^ 0xC0) — the 180-degree
+#          rotation of 0xA0, confirmed via test_15 for BTN-2/3's flipped
+#          mounting (both physical positions checked).
+# RGB colour order is already correct at bit3=0 in both — do not add
+# 0x08/BGR.
+ST7789_MADCTL = (0xA0, 0xA0, 0x60, 0x60)   # indexed by BTN-0..3, both
+                                            # values bench-confirmed
 
 # ── SD card — DEFERRED ───────────────────────────────────────────
 # ILI9488 SDO permanently drives MISO low — built-in slot unusable.
@@ -72,8 +148,9 @@ MCP_BTN_SCREEN = (0, 1, 2, 3)   # SCREEN-0..3 on MCP GP0-GP3
 MCP_BTN_BACK   = 4               # BACK/HOME on MCP GP4
 MCP_BTN_MASK   = 0x1F            # bits 0-4
 
-# BTN-0 = PREV ← in menu   BTN-3 = NEXT → in menu
-# BTN-1 / BTN-2 = game previews / context actions
+# Physical layout: 2x2 matrix, 0|2 top row, 1|3 bottom row.
+# BTN-1 = PREV ← in menu   BTN-3 = NEXT → in menu
+# BTN-0 / BTN-2 = game previews / context actions
 BTN_DEBOUNCE_MS = 30
 BTN_HOLD_MS     = 600
 BTN_POLL_MS     = 10             # MCP23008 poll interval
@@ -84,15 +161,32 @@ PIN_I2S_LRC       = 1    # ✓ confirmed GP1
 PIN_I2S_DIN       = 16   # ✓ confirmed GP16
 AUDIO_SAMPLE_RATE = 22050
 AUDIO_BITS        = 16
-AUDIO_BUF_BYTES   = 4096
+# Was 4096. Confirmed on hardware: machine.I2S(..., ibuf=AUDIO_BUF_BYTES)
+# appears to internally double-buffer its DMA ring -- every I2S playback
+# allocation fails at exactly 2x this value (8192B at 4096), not the
+# configured size itself. I2S is deliberately torn down and rebuilt fresh
+# for every single clip (MAX98357A auto-mute behavior, see drivers/audio.py),
+# so this allocation happens on EVERY sound, not just once. Halved to 2048
+# (this failure's already-documented "next lever" — see HARDWARE_NOTES.md's
+# third and eleventh confirmed hardware failures) rather than adding yet
+# another permanent boot-time reservation, since several of those already
+# stacked up this session and each one shrinks the elastic heap available
+# to allocations like this one. No other production consumer of this
+# constant besides drivers/audio.py (confirmed via grep — only two test
+# scripts also reference it).
+AUDIO_BUF_BYTES   = 2048
 
 # ── WS2812B LEDs ✓ confirmed ─────────────────────────────────────
 # Data via 74AHCT125 level shifter (3.3V → 5V).
 # 330Ω series resistor on data line.
 # Strip powered from VBUS (5V).
-PIN_LED_STRIP  = 20    # ✓ confirmed GP20
-NUM_LEDS       = 8     # current strip — may expand later
-LED_BRIGHTNESS = 0.35
+PIN_LED_STRIP     = 20    # ✓ confirmed GP20
+NUM_LEDS          = 8     # current strip — may expand later
+LED_BRIGHTNESS    = 0.35
+LED_IDLE_BRIGHTNESS = 0.02   # after SCREEN_DIM_S idle — was hardcoded 0.05
+                              # in core/kernel.py; dropped further since it
+                              # only needs to be a faint ambient glow, not
+                              # a visible effect, while idle on battery
 
 # ── Haptic motor ✓ confirmed ─────────────────────────────────────
 # ERM coin motor via 2N3904 NPN transistor.
@@ -100,21 +194,101 @@ LED_BRIGHTNESS = 0.35
 PIN_HAPTIC     = 22    # ✓ confirmed GP22
 HAPTIC_PULSE_MS = 60
 
-# ── Battery ADC — pending ────────────────────────────────────────
-# Voltage divider → MCP23008 GP5 (future — not yet wired)
-PIN_BAT_ADC    = None
-BAT_FULL_V     = 4.2
-BAT_EMPTY_V    = 3.3
+# ── Battery ADC — pending bench confirmation ─────────────────────
+# Was planned as a voltage divider into MCP23008 GP5, but the MCP23008
+# is a pure digital I/O expander — it has no ADC capability at all, so
+# that plan could never have given a real voltage/percentage, only a
+# HIGH/LOW flag. Switched to the Pico 2 W's own native VSYS monitor
+# instead: GP29/ADC3 reads VSYS (the battery rail) directly, no new
+# components needed. GP29 shares its physical pin with the CYW43439
+# wireless chip's SPI CLK line, so reading it mid-SPI-transaction would
+# give garbage — but this firmware never imports `network`/uses WLAN
+# anywhere, so that conflict never actually arises here. GP25 (the
+# wireless chip's CS-equivalent line) is still held high before each
+# read as cheap insurance, matching the documented technique for this
+# board. See tests/test_16_battery_vsys.py and drivers/battery.py.
+PIN_BAT_ADC    = 29    # GP29 / ADC3 — VSYS monitor (see note above)
+PIN_WIFI_CS    = 25    # held HIGH before each battery read (see note above)
+# ✓ BENCH-CONFIRMED — RECALIBRATED after D1 (the reverse-blocking Schottky
+# diode added in the battery->VSYS path, to stop USB backfeeding into the
+# battery) made VSYS no longer the same node as the battery terminals.
+# The original VSYS_ADC_RATIO=2.55 was calibrated with the battery wired
+# straight to VSYS, no diode -- once D1 went in, that ratio was still
+# internally correct (it converts raw -> the real VSYS voltage), but
+# BAT_FULL_V/BAT_EMPTY_V were being compared against VSYS as if VSYS
+# still equalled the battery's own terminal voltage, so a fully-charged
+# battery could read as empty.
+#
+# Direct measurement on the as-built board: battery 4.17V -> VSYS 3.80V
+# (drop 0.37V, of which 0.33V is the diode itself, textbook for a
+# 1N5819), battery 3.94V -> VSYS 3.58V (drop 0.36V), and — on a
+# DIFFERENT physical cell, replaced after the first one turned out weak
+# — battery 3.28V (light load) -> VSYS 2.88V (drop 0.40V). Three points
+# across two different batteries agreeing within 40mV confirms both
+# that the drop is a roughly constant offset (not something that scales
+# with battery voltage/current, justifying the fixed-additive-constant
+# model) AND that VSYS_ADC_RATIO is a property of this BOARD, not the
+# specific cell behind it, exactly as expected since it's really
+# characterising the RP2350's own ADC/divider. VSYS_DROP_V is the
+# averaged battery->VSYS gap; BAT_FULL_V/BAT_EMPTY_V stay in
+# battery-terminal-voltage units (meaning what their names say) and
+# drivers/battery.py subtracts VSYS_DROP_V from them before comparing
+# against the VSYS-domain reading.
+#
+# raw -> VSYS ratio, THREE-point zero-intercept fit:
+#   mean raw=25280.2 <-> VSYS=3.80V (58 samples, battery 1)
+#   mean raw=23773.0 <-> VSYS=3.58V (16 samples, battery 1, ~50% on screen)
+#   mean raw=19243.4 <-> VSYS=2.88V (13 samples, battery 2, showing empty)
+# Independently imply ratios of 2.9851 / 2.9906 / 2.9721 -- within ~0.6%
+# of each other even across the battery swap and down near BAT_EMPTY_V,
+# confirming the simple proportional model holds across the range this
+# app actually operates in. Averaged: 2.983.
+VSYS_ADC_RATIO = 2.983
+VSYS_DROP_V    = 0.377  # battery -> VSYS: D1's forward drop + switch/wiring,
+                         # averaged from three points, 0.36-0.40V (see above)
+# BAT_FULL_V was 4.2 (textbook), which had a freshly-charged battery
+# displaying ~85-90% -- confirmed on hardware that the smoothing fix in
+# drivers/battery.py closed most of that gap (the same reading computes
+# to 95.3% now), and the remaining ~5% is real: this board's TP4056
+# module terminates a full charge at 4.18V (no-load, measured directly),
+# not the textbook 4.20V -- ordinary charge-IC tolerance, not a fault.
+# Calibrated against what this charger circuit actually delivers, same
+# as everything else in this section, rather than a spec-sheet number.
+BAT_FULL_V     = 4.18   # battery's own terminal voltage, NOT VSYS
+BAT_EMPTY_V    = 3.3    # battery's own terminal voltage, NOT VSYS
 BAT_WARN_PCT   = 15
 
 # ── Dead / reserved pins ─────────────────────────────────────────
 # GP5  — DEAD. Output driver measures -4.2mV when set HIGH. Never use.
-# GP23/24/25/29 — WiFi internal. Never connect anything.
+# GP23/24 — WiFi internal. Never connect anything.
+# GP25/29 — WiFi internal, but DELIBERATELY used for battery monitoring
+#           (see Battery ADC section above) — never wired/tested before
+#           now, so this note is not itself bench-confirmed either.
 
 # ── UX timing ────────────────────────────────────────────────────
 MENU_SCROLL_MS     = 120
-GAME_RETURN_IDLE_S = 60
-SCREEN_DIM_S       = 120
+GAME_RETURN_IDLE_S = 60   # idle timeout on a game's END SCREEN only (see
+                          # BaseGame.wait_or_timeout_back) -- never mid-play
+SCREEN_DIM_S       = 60
+
+# ── Countdown text scale ─────────────────────────────────────────
+# Was 10 (core/game_base.py's "3-2-1-GO!" countdown). Single source of
+# truth shared by core/game_base.py (actual render) and
+# core/display_manager.py's warm_text_scratch() (boot-time pre-warm) --
+# they used to be two independently hardcoded 10s in different files, an
+# easy way to silently desync. Confirmed on hardware: at scale=10, "GO!"'s
+# out buffer (dw=240, dh=80 -> 38,400B) was the single biggest text draw
+# in the app, and even after seating five other large boot-time
+# reservations totaling ~189KB, this one still failed with 150KB nominally
+# free (contiguous fragmentation, not a shortage -- see HARDWARE_NOTES.md's
+# thirteenth/fourteenth confirmed hardware failures). Dropped to 7
+# (out buffer -> 168x56x2 = 18,816B, roughly half) to reduce the single
+# largest contiguous ask in the whole boot sequence, rather than continue
+# reordering reservations that don't collectively fit regardless of order.
+# Still large/dramatic on a 480x320 screen -- just not the biggest
+# possible. Raise this again only after confirming real headroom via the
+# gc.mem_free() checkpoint prints in core/kernel.py's init().
+COUNTDOWN_TEXT_SCALE = 7
 
 # ══════════════════════════════════════════════════════════════════
 # CONFIRMED GPIO SUMMARY
@@ -131,11 +305,13 @@ SCREEN_DIM_S       = 120
 #  GP20  WS2812B → 74AHCT125     GP21  DC BTN-3
 #  GP22  Haptic → 2N3904         GP26  I2C SDA
 #  GP27  I2C SCL                 GP28  TOUCH_INT only
-#  GP23/24/25/29 WiFi — NEVER CONNECT
+#  GP23/24 WiFi — NEVER CONNECT
+#  GP25  WiFi CS-equiv, held HIGH for battery reads (not bench-confirmed)
+#  GP29  VSYS monitor / ADC3 — battery voltage (not bench-confirmed)
 #
 # MCP23008 (0x20) GPIO:
 #  MCP0  SCREEN-0 button         MCP1  SCREEN-1 button
 #  MCP2  SCREEN-2 button         MCP3  SCREEN-3 button
-#  MCP4  BACK/HOME button        MCP5  Battery ADC (future)
+#  MCP4  BACK/HOME button        MCP5  spare (battery moved to GP29/ADC3)
 #  MCP6  spare                   MCP7  spare
 # ══════════════════════════════════════════════════════════════════

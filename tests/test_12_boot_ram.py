@@ -1,6 +1,20 @@
 # test_12_boot_ram.py
 # Button Blasters -- Boot RAM & fragmentation probe
 #
+# CAVEAT LEARNED THE HARD WAY: this probe's "clear to build" verdict
+# measures fragmentation IMMEDIATELY POST-BOOT, before any menu rendering,
+# game session, or Tier B asset install has run. Star Bonk's actual
+# StripBufferPool.__enter__() call (games/bonk/game.py's load(), via
+# core/sprite_adapter.py) does NOT run at boot -- it runs after all of
+# that churn -- and it failed to seat on real hardware (twice) despite
+# this test's STRIP_H=32 verdict below. A boot-time "seats cleanly" is
+# NOT the same claim as "seats where it's actually called from." STRIP_H
+# is 16 in the live code now (see drivers/strip_renderer.py); this file
+# is left as a record of the original (misleading, in hindsight)
+# measurement rather than rewritten -- re-run it with a realistic
+# post-menu/post-install heap state if you want a probe that actually
+# predicts the failure mode that bit us.
+#
 # PURPOSE
 #   Measure the REAL free heap and largest contiguous block on the RP2350
 #   AFTER firmware v3.0 has finished booting -- i.e. once every peripheral

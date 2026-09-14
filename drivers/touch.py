@@ -61,18 +61,33 @@ class TouchDriver:
             rst.value(0); time.sleep_ms(10)
             rst.value(1); time.sleep_ms(50)
 
-        try:
-            self._i2c.writeto_mem(self._addr, _FT_THRESHOLD, bytes([22]))
-            self._i2c.writeto_mem(self._addr, _FT_CTRL,      bytes([0x00]))
-        except OSError as e:
-            print(f"[touch] FT6236 config error: {e}")
+        # Config writes right after RST can EIO if the chip hasn't finished
+        # its internal boot yet -- 50ms is usually enough but not always.
+        # Retry rather than silently continuing: swallowing the error here
+        # used to leave the chip unconfigured while still printing "ready",
+        # with no visible sign anything was wrong.
+        configured = False
+        for attempt in range(4):
+            try:
+                self._i2c.writeto_mem(self._addr, _FT_THRESHOLD, bytes([22]))
+                self._i2c.writeto_mem(self._addr, _FT_CTRL,      bytes([0x00]))
+                configured = True
+                break
+            except OSError as e:
+                print(f"[touch] FT6236 config attempt {attempt + 1} failed: {e}")
+                time.sleep_ms(20)
 
         self._int_pin = Pin(config.PIN_TOUCH_INT, Pin.IN, Pin.PULL_UP)
         self._int_pin.irq(trigger=Pin.IRQ_FALLING, handler=self._isr)
 
-        print(f"[touch] FT6236 ready  0x{self._addr:02X}  "
-              f"SDA=GP{config.PIN_I2C_SDA}  SCL=GP{config.PIN_I2C_SCL}  "
-              f"INT=GP{config.PIN_TOUCH_INT}")
+        if configured:
+            print(f"[touch] FT6236 ready  0x{self._addr:02X}  "
+                  f"SDA=GP{config.PIN_I2C_SDA}  SCL=GP{config.PIN_I2C_SCL}  "
+                  f"INT=GP{config.PIN_TOUCH_INT}")
+        else:
+            print(f"[touch] FT6236 UNCONFIGURED after 4 attempts -- "
+                  f"touch will likely not respond. Check CTP_RST pull-up "
+                  f"and I2C bus 1 wiring.")
 
         return self._i2c   # return for sharing with MCP23008
 

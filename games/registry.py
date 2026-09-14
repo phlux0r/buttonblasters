@@ -29,12 +29,12 @@ def _register(module_path, class_name):
 
 # ── Uncomment as games are implemented ───────────────────────────
 _register("games.match.game",    "ShapeMatchGame")
-# _register("games.memory.game",   "ButtonMemoryGame")
-# _register("games.bonk.game",     "StarBonkGame")
+_register("games.memory.game",   "ButtonMemoryGame")
+_register("games.bonk.game",     "StarBonkGame")
 # _register("games.count.game",    "CountItGame")
 # _register("games.sort.game",     "MagicSortGame")
 # _register("games.feed.game",     "FeedTheAnimalGame")
-# _register("games.bakery.game",   "MagicBakeryGame")
+_register("games.bakery.game",   "MagicBakeryGame")
 # _register("games.shadow.game",   "ShadowMatchGame")
 # _register("games.garden.game",   "GardenGrowGame")
 # _register("games.adventure.game","MyBigDayOutGame")

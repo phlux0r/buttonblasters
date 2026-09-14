@@ -21,10 +21,9 @@ wire when the ST7789 driver object is at hand.
 
 Usage in a game:
 
-    from drivers import strip_renderer            # or wherever it lives
-    from core.sprite_adapter import MainScreenAdapter
+    from core.sprite_adapter import MainScreenAdapter, make_main_strip_renderer
 
-    adapter = MainScreenAdapter(renderer)         # renderer = StripRenderer
+    adapter = MainScreenAdapter(make_main_strip_renderer())
     adapter.open()                                # at load(): seats the pool
     try:
         eng = SpriteEngine(adapter, bg)
@@ -34,13 +33,51 @@ Usage in a game:
         adapter.close()                           # at unload(): frees 150KB
 """
 
-from drivers.strip_renderer import RGB565_STRIP, DISPLAY_FREQ
-# NOTE: when strip_renderer moves into the drivers/ package, change to:
-#   from drivers.strip_renderer import RGB565_STRIP, DISPLAY_FREQ
+from machine import Pin
+from drivers.spi_bus import spi_bus
+from drivers.strip_renderer import StripRenderer, RGB565_STRIP, DISPLAY_FREQ
+import config
+
+
+def make_main_strip_renderer():
+    """Construct a StripRenderer wired to the ILI9488 main display's real
+    CS/DC pins and the shared SPI0 bus. Each call makes its own Pin handles
+    for GP{PIN_CS_MAIN,PIN_DC_MAIN} — MicroPython allows multiple Pin
+    objects for the same GPIO, and only one code path (this renderer, or
+    the normal ILI9488 fill/blit path) ever drives the main display within
+    a single game, so there's no contention. First real caller of
+    StripRenderer/sprite_engine — see HARDWARE_NOTES.md before assuming the
+    150KB buffer pool and the blocking transmit path are bench-verified."""
+    cs = Pin(config.PIN_CS_MAIN, Pin.OUT, value=1)
+    dc = Pin(config.PIN_DC_MAIN, Pin.OUT, value=1)
+    return StripRenderer(spi_bus.spi, cs, dc, spi_bus.set_freq)
 
 
 def _freq_noop(hz):
     pass
+
+
+# Persistent, module-level (like flash_assets.arena) instead of the pool's
+# original per-game-session RAII scope. STRIP_H already dropped 32->16->8,
+# each step forced by a confirmed on-hardware MemoryError from repeated
+# per-session alloc/free fragmenting the heap (see HARDWARE_NOTES.md) -- at
+# STRIP_H=8 it STILL failed, confirming the docs' own predicted "next lever":
+# seat once, on the freshest heap, never free until power-off.
+_shared_pool = None
+
+
+def seat_shared_pool():
+    """Seat the main-screen strip buffer pool once, called from
+    core/kernel.py at boot before menu/subsystem churn exists. Idempotent —
+    a no-op if already seated. The pool then lives for the whole power-on
+    session (not just one game's), so MainScreenAdapter.close() below
+    intentionally never frees it."""
+    global _shared_pool
+    if _shared_pool is None:
+        renderer = make_main_strip_renderer()
+        p = renderer.acquire_strips()
+        p.__enter__()
+        _shared_pool = p
 
 
 class MainScreenAdapter:
@@ -68,28 +105,34 @@ class MainScreenAdapter:
     # ------------------------------------------------------------ lifetime
 
     def open(self):
-        """Seat the strip buffers. Call at game load(), a quiet heap moment.
-        Raises the pool's diagnostic MemoryError if buffers can't seat."""
+        """Attach to the shared strip buffer pool (seated at boot by
+        seat_shared_pool() — this call is just a defensive fallback, same
+        pattern as games/bonk/game.py's scratch arena). Call at game
+        load()."""
         if self._pool is not None:
             return
-        p = self._r.acquire_strips()
-        p.__enter__()                 # manual enter: held across the game
-        self._pool = p
+        seat_shared_pool()
+        self._pool = _shared_pool
         if self._bypass:
             self._real_freq = self._r.set_bus_freq
             self._real_freq(DISPLAY_FREQ)          # once, for the whole game
             self._r.set_bus_freq = _freq_noop
 
     def close(self):
-        """Release buffers + restore display bus freq. Call at unload(),
-        ideally from a finally so a crashing game can't leak the pool."""
+        """Restore display bus freq and detach from the shared pool. Call
+        at unload(), ideally from a finally so a crashing game can't leak
+        the freq-bypass state. Does NOT free the pool's buffers — it's
+        shared/persistent for the whole power-on session now, not scoped to
+        one game (see seat_shared_pool())."""
         if self._real_freq is not None:
-            self._r.set_bus_freq = self._real_freq   # BEFORE pool exit,
-            self._real_freq = None                   # so __exit__ restores
-        if self._pool is not None:                   # the real frequency
-            p = self._pool
+            self._r.set_bus_freq = self._real_freq
+            self._real_freq = None
+        if self._pool is not None:
             self._pool = None
-            p.__exit__(None, None, None)
+            try:
+                self._r.set_bus_freq(DISPLAY_FREQ)
+            except Exception:
+                pass
 
     @property
     def is_open(self):

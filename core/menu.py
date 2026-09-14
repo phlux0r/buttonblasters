@@ -1,17 +1,20 @@
 # core/menu.py — Button Blasters
 # Animated game carousel menu.
 #
+# Physical layout is a 2x2 matrix (0|2 top row, 1|3 bottom row); left
+# column {0,1} is "previous", right column {2,3} is "next".
+#
 # Layout:
 #   Main screen  → selected game card (icon + title + description + stars)
-#   BTN-0        → PREV ← indicator
-#   BTN-1        → adjacent game preview (idx-1)
-#   BTN-2        → adjacent game preview (idx+1)
-#   BTN-3        → NEXT → indicator
+#   BTN-0        → adjacent game preview (idx-1), top-left
+#   BTN-1        → PREV ← indicator, bottom-left
+#   BTN-2        → adjacent game preview (idx+1), top-right
+#   BTN-3        → NEXT → indicator, bottom-right
 #
 # Navigation:
-#   BTN-0 press  → scroll left (PREV)
+#   BTN-1 press  → scroll left (PREV)
 #   BTN-3 press  → scroll right (NEXT)
-#   BTN-1 press  → launch preview game (idx-1 … wraps)
+#   BTN-0 press  → launch preview game (idx-1 … wraps)
 #   BTN-2 press  → launch preview game (idx+1 … wraps)
 #   BACK press   → (reserved — no-op in menu, returns to top of carousel)
 #   Touch tap on lower half of main screen → launch selected game
@@ -23,7 +26,16 @@ from drivers.audio import audio
 from drivers.leds import leds
 from drivers.buttons import buttons, BTN_PREV, BTN_NEXT, BTN_BACK
 from drivers.assets import assets
+from drivers.battery import battery
+from core.settings import settings as settings_screen
 import config
+
+# Top-left gear/settings tap target on the main card. 48x48 is a little
+# under the project's own 57x57 min-touch-target guidance (see
+# display_manager.draw_touch_target's docstring) to limit how much of a
+# baked menu card it covers — worth revisiting if it proves fiddly to
+# actually tap.
+_SETTINGS_ICON = (4, 4, 48, 48)
 
 _CARD_COLORS = [
     rgb(60,  30, 120),
@@ -35,9 +47,9 @@ _CARD_COLORS = [
 ]
 
 _MENU_CARD = "/assets/menu/bgm_menu-%s_480x320.bz"   # % GAME_ID
-_MENU_TILE = "/assets/menu/btn_menu-%s_240x300.bz"   # % GAME_ID
-BTN_PREV_PATH = "/assets/menu/btn_prev_240x300.bz"
-BTN_NEXT_PATH = "/assets/menu/btn_next_240x300.bz"
+_MENU_TILE = "/assets/menu/btn_menu-%s_280x240.bz"   # % GAME_ID — landscape
+BTN_PREV_PATH = "/assets/menu/btn_prev_280x240.bz"
+BTN_NEXT_PATH = "/assets/menu/btn_next_280x240.bz"
 
 class Menu:
 
@@ -55,32 +67,42 @@ class Menu:
         buttons.clear()
         if leds.ready:
             leds.start_effect(leds.idle_rainbow())
-        # Static PREV/NEXT arrow cards — painted ONCE (button screens retain),
-        # so scrolling only repaints the two dynamic preview screens.
-        if not await display.paint_btn_bg(0, BTN_PREV_PATH):
-            await display.show_prev_indicator()
-        if not await display.paint_btn_bg(3, BTN_NEXT_PATH):
-            await display.show_next_indicator()
+        await self._render_prev_next()
         await self._render_full()
-        await self._render_full()
+
+        # First point in boot where all 4 button screens actually have
+        # real content on them -- drivers/display.py starts the shared
+        # backlight (GP13) OFF specifically so it can be turned on exactly
+        # here instead of at power-on, which used to show raw, uninitialized
+        # panel RAM (visible noise) for the whole rest of boot.
+        display.set_btn_backlight(True)
 
         while True:
             action, data = await buttons.get_menu_event()
 
             if action == "prev":
                 self._idx = (self._idx - 1) % self._n
+                # Sound BEFORE the render, and AWAITED (wait=True) — same
+                # rule as games/bonk/game.py's _bonk_feedback() and
+                # games/match/game.py's _reveal_correct(): menu_move.wav can
+                # resolve via an SD-backed path, and SD shares the SPI0 bus
+                # with the displays. Without wait=True here, that fire-and-
+                # forget file read raced _render_full()'s own SPI0 writes —
+                # confirmed on hardware as screen tearing. wait=True still
+                # starts the click instantly; it just makes the render wait
+                # for the read to finish first, so the two never overlap.
+                await audio.play_sfx("menu_move.wav", wait=True)
                 await self._render_full()
-                await audio.play_sfx("menu_move.wav")
 
             elif action == "next":
                 self._idx = (self._idx + 1) % self._n
+                await audio.play_sfx("menu_move.wav", wait=True)
                 await self._render_full()
-                await audio.play_sfx("menu_move.wav")
 
             elif action == "select":
-                # BTN-1 → launch idx-1 preview, BTN-2 → launch idx+1 preview
+                # BTN-0 → launch idx-1 preview, BTN-2 → launch idx+1 preview
                 btn = data
-                if btn == 1:
+                if btn == 0:
                     self._idx = (self._idx - 1) % self._n
                 elif btn == 2:
                     self._idx = (self._idx + 1) % self._n
@@ -94,8 +116,18 @@ class Menu:
 
             elif action == "tap":
                 tx, ty = data
+                if buttons.hit_test(tx, ty, _SETTINGS_ICON):
+                    await audio.play_sfx("menu_select.wav")
+                    await settings_screen.run()
+                    buttons.clear()
+                    # SettingsScreen overwrites BTN-1/BTN-3 with its -/+
+                    # graphics — _render_full() deliberately never touches
+                    # those two (see _render_prev_next()'s docstring), so
+                    # without this they'd be stuck showing -/+ forever.
+                    await self._render_prev_next()
+                    await self._render_full()
                 # Lower half of main screen = launch selected game
-                if ty > config.MAIN_H // 2:
+                elif ty > config.MAIN_H // 2:
                     await audio.play_sfx("menu_select.wav")
                     return self._registry[self._idx]
 
@@ -105,20 +137,37 @@ class Menu:
                     self._idx = (self._idx + 1) % self._n
                 elif direction == "swipe_right":
                     self._idx = (self._idx - 1) % self._n
+                await audio.play_sfx("menu_move.wav", wait=True)
                 await self._render_full()
-                await audio.play_sfx("menu_move.wav")
 
     # ── Rendering ────────────────────────────────────────────────
 
+    async def _render_prev_next(self):
+        """Paint BTN-1/BTN-3's static PREV/NEXT arrow cards. Called once on
+        entering the menu, and again on returning from anything (e.g. the
+        settings screen) that overwrites those two screens with its own
+        content — _render_full() deliberately does NOT repaint these on
+        every scroll (only the two dynamic preview screens), so any caller
+        that puts something else on BTN-1/3 must restore them explicitly."""
+        if not await display.paint_btn_bg(1, BTN_PREV_PATH):
+            await display.show_prev_indicator()
+        if not await display.paint_btn_bg(3, BTN_NEXT_PATH):
+            await display.show_next_indicator()
+
     async def _render_full(self):
         await self._render_main_card()
+        await self._render_settings_icon()
         await self._render_btn_screens()
 
-    # ── REPLACEMENT for Menu._render_main_card() in core/menu.py ─────────
-    # Landscape 480×320 layout. Uses the wider canvas (bigger title) and
-    # distributes elements across the shorter height. Only this one method
-    # changes; _render_btn_screens() and everything else in menu.py stay
-    # as-is (the button ST7789s are not affected by main-display rotation).
+    async def _render_settings_icon(self):
+        # Drawn AFTER the main card (baked or procedural) so it isn't
+        # painted over — see _render_full()'s ordering.
+        x, y, w, h = _SETTINGS_ICON
+        await display.draw_touch_target(x, y, w, h, color=WHITE, label="SET")
+
+    # Procedural fallback card (landscape 480×320) — used when a game has
+    # no baked menu card asset. Draws title/description/stars/hint from the
+    # game class attributes on a flat colour.
 
     async def _render_main_card_procedural(self, game_cls):
         bg     = _CARD_COLORS[self._idx % len(_CARD_COLORS)]
@@ -209,10 +258,10 @@ class Menu:
         await self._render_battery(BLACK)
 
     async def _render_btn_screens(self):
-        """BTN-1 = prev game preview, BTN-2 = next game preview.
-           BTN-0 (PREV) and BTN-3 (NEXT) are static — painted once in run()."""
+        """BTN-0 = prev game preview, BTN-2 = next game preview.
+           BTN-1 (PREV) and BTN-3 (NEXT) are static — painted once in run()."""
         prev_idx = (self._idx - 1) % self._n
-        await self._render_btn_game(1, prev_idx)
+        await self._render_btn_game(0, prev_idx)
         next_idx = (self._idx + 1) % self._n
         await self._render_btn_game(2, next_idx)
 
@@ -250,16 +299,17 @@ class Menu:
             await self._render_btn_game_procedural(slot, game_idx)
 
     async def _render_battery(self, bg):
-        if config.PIN_BAT_ADC is None:
+        # Uses the bench-calibrated drivers/battery.py (VSYS_ADC_RATIO=2.55,
+        # the safe-read dance for GP29's shared SPI-CLK pin) instead of a
+        # separate inline ADC read -- this used to hardcode ratio=2 here,
+        # a stale value from before calibration, reporting a materially
+        # wrong percentage than the one the actual driver/tests confirmed.
+        if not battery.ready:
             return
         try:
-            from machine import ADC
-            adc = ADC(config.PIN_BAT_ADC)
-            raw = adc.read_u16()
-            v   = (raw / 65535 * 3.3) * 2
-            pct = int((v - config.BAT_EMPTY_V) /
-                      (config.BAT_FULL_V - config.BAT_EMPTY_V) * 100)
-            pct = max(0, min(100, pct))
+            pct = battery.read_percent()
+            if pct < 0:
+                return
             col = (GREEN if pct > 30 else
                    YELLOW if pct > 15 else rgb(255, 60, 0))
             bw = 28; filled = bw * pct // 100
@@ -286,4 +336,4 @@ class Menu:
         cx = config.MAIN_W // 2
         label = "WAIT..."
         lx = cx - len(label) * 8
-        await display.text_main(label, lx, 270, 0xe681, 0xff9b, scale=2)
+        await display.text_main(label, lx, 270, 0xe681, 0xffff, scale=2)

@@ -12,15 +12,40 @@
 # silently swallowed by the scheduler — an earlier version lost ALL audio
 # because a task exception vanished with no traceback and no sound.
 #
-# Audio files on SD: 16-bit signed PCM WAV, mono, 22050Hz
+# Audio files: 16-bit signed PCM WAV, mono, 22050Hz
 # Convert: ffmpeg -i input.mp3 -ar 22050 -ac 1 -acodec pcm_s16le out.wav
+#
+# CLIP RESOLUTION ORDER (first hit wins):
+#   1. /assets/<game_id>/audio/<kind>/   Tier B — installed from SD by
+#      game_cache at game load (littlefs; no SPI0 traffic to play)
+#   2. /assets/audio/<kind>/             littlefs, deployed shared clips
+#   3. /sd/audio/<kind>/                 SD directly, UNMANAGED (see below)
+#   4. _SYNTH_MAP tone                   fallback when no file exists
+#
+# SD reads here do NOT bracket the shared SPI0 bus at the SD-safe clock
+# (unlike every other SD consumer — read_file(), game_cache, kernel score
+# I/O). That's a deliberate, known trade: bracketing every ~4KB chunk read
+# in spi_bus.raw() fixes a theoretical concurrent-access hazard but costs
+# a lock acquire + frequency check every ~93ms of audio, and measured on
+# hardware that was audible as stutter even after the frequency-cache
+# regression it exposed was separately fixed. The accepted hazard (see
+# assets.py's SHARED-BUS RULE note) is that no current game draws to a
+# display while a background (non-awaited) clip is still streaming from
+# SD — every game explicitly sequences draw-then-play or awaits playback
+# before its next draw. If a future game needs true background SD audio
+# concurrent with SD/display traffic, that game's own audio should live
+# in /assets/<game_id>/audio/ (Tier B, no SPI0 contention) rather than
+# reintroducing bus-locking here.
 
 import asyncio
+import gc
 import struct
 import math
+import micropython
 import config
 
-_SD_DATA_BAUD = 400_000   # keep in sync with drivers/assets.py / game_cache.py
+_FLASH_AUDIO_ROOT = "/assets/audio"
+_SD_AUDIO_ROOT    = "/sd/audio"
 
 _SYNTH_MAP = {
     "correct.wav":       (659, 150, 0.4),
@@ -41,13 +66,69 @@ _SYNTH_MAP = {
 }
 
 
-def _synth_tone(freq, duration_ms, volume=0.4, sample_rate=22050):
-    n   = int(sample_rate * duration_ms / 1000)
-    buf = bytearray(n * 2)
-    for i in range(n):
-        s = int(32767 * volume * math.sin(2 * math.pi * freq * i / sample_rate))
-        struct.pack_into('<h', buf, i * 2, s)
-    return buf
+def _read_wav_header(f):
+    """Parse RIFF/WAVE chunks properly instead of assuming a fixed 44-byte
+    header. Some encoders insert extra chunks (LIST/INFO/fact/etc.) before
+    the data chunk -- trusting byte 44 as the start of audio data misaligns
+    everything after it for those files, which plays back as crunchy noise
+    rather than anything resembling the source (this was silently happening
+    for whichever clips came from a different encoder than the documented
+    ffmpeg pipeline). Returns (channels, sample_rate, bits, data_offset,
+    data_size), or None if this isn't a readable WAV."""
+    riff = f.read(12)
+    if len(riff) < 12 or riff[:4] != b'RIFF' or riff[8:12] != b'WAVE':
+        return None
+    channels = sample_rate = bits = None
+    data_offset = data_size = None
+    pos = 12   # tracked manually -- .tell() isn't relied on elsewhere in
+               # this codebase's file I/O, .seek(offset, whence) is
+    while True:
+        chunk_hdr = f.read(8)
+        if len(chunk_hdr) < 8:
+            break
+        pos += 8
+        chunk_id, chunk_size = chunk_hdr[:4], struct.unpack('<I', chunk_hdr[4:8])[0]
+        if chunk_id == b'fmt ':
+            fmt = f.read(chunk_size)
+            channels    = struct.unpack('<H', fmt[2:4])[0]
+            sample_rate = struct.unpack('<I', fmt[4:8])[0]
+            bits        = struct.unpack('<H', fmt[14:16])[0]
+            pos += chunk_size
+        elif chunk_id == b'data':
+            data_offset = pos
+            data_size   = chunk_size
+            break   # audio data itself isn't read here, just located
+        else:
+            f.seek(chunk_size, 1)   # skip chunk we don't care about
+            pos += chunk_size
+        if chunk_size % 2:           # chunks are word-aligned
+            f.seek(1, 1)
+            pos += 1
+    if data_offset is None:
+        return None
+    return channels, sample_rate, bits, data_offset, data_size
+
+
+@micropython.viper
+def _scale_volume(buf: ptr8, n_bytes: int, vol_q8: int):
+    # In-place volume scale of 16-bit LE samples, vol_q8 = volume * 256.
+    # Native code — the per-sample struct.unpack/pack loop this replaces
+    # took longer than the audio it processed and starved the I2S buffer.
+    i = 0
+    while i < n_bytes:
+        s = int(buf[i]) | (int(buf[i + 1]) << 8)
+        if s & 0x8000:
+            s -= 0x10000
+        s = (s * vol_q8) >> 8
+        buf[i]     = s & 0xFF
+        buf[i + 1] = (s >> 8) & 0xFF
+        i += 2
+
+
+# Largest buffer any _SYNTH_MAP entry can ever need (game_over.wav, 400ms
+# @ 22050Hz) -- see AudioManager._synth_buf below for why this is
+# pre-sized rather than left to grow lazily.
+_MAX_SYNTH_MS = max(dur for _, dur, _ in _SYNTH_MAP.values())
 
 
 class AudioManager:
@@ -60,7 +141,40 @@ class AudioManager:
         self._sfx_task   = None
         self._volume     = 1.0
         self._drain_evt  = None      # Event the IRQ sets (per-playback owner)
+        self._game_root  = None      # /assets/<game_id>/audio while a game runs
+        self._read_buf   = None      # lazy WAV read buffer, reused across
+                                      # _play_wav() calls (see there — was a
+                                      # fresh bytearray(AUDIO_BUF_BYTES) every
+                                      # call, a repeating uncached allocation
+                                      # that contributed to a confirmed
+                                      # on-hardware MemoryError)
+        # Synth-tone scratch buffer, pre-sized to the biggest _SYNTH_MAP
+        # entry and allocated NOW (AudioManager() is constructed as an
+        # import-time side effect, on the freshest heap this app ever
+        # sees) instead of lazily inside _synth_tone() -- that used to
+        # bytearray() a fresh buffer every call (never cached, unlike
+        # _read_buf above), and confirmed on hardware to MemoryError right
+        # after Star Bonk's end screen: announce_round_complete() plays
+        # "well_done.wav"/"new_high_score.wav" via this synth fallback
+        # (neither has a baked audio file), landing exactly when the heap
+        # is most fragmented from that screen's tile/result paints.
+        self._synth_buf = bytearray(
+            int(config.AUDIO_SAMPLE_RATE * _MAX_SYNTH_MS / 1000) * 2)
         self._init_hardware()
+
+    def _synth_tone(self, freq, duration_ms, volume=0.4, sample_rate=22050):
+        n    = int(sample_rate * duration_ms / 1000)
+        need = n * 2
+        if len(self._synth_buf) < need:
+            self._synth_buf = bytearray(need)   # play_tone() with a longer
+                                                  # duration than any _SYNTH_MAP
+                                                  # entry — not pre-warmed, but
+                                                  # still cached from here on
+        buf = self._synth_buf
+        for i in range(n):
+            s = int(32767 * volume * math.sin(2 * math.pi * freq * i / sample_rate))
+            struct.pack_into('<h', buf, i * 2, s)
+        return memoryview(buf)[:need]
 
     def _init_hardware(self):
         if (config.PIN_I2S_BCLK is None or
@@ -86,6 +200,19 @@ class AudioManager:
             print(f"[audio] I2S init failed: {e}")
 
     def _make_i2s(self):
+        # gc.collect() right before construction: confirmed on hardware that
+        # machine.I2S's actual internal allocation does NOT scale down with
+        # a smaller config.AUDIO_BUF_BYTES the way HARDWARE_NOTES.md's third
+        # failure entry guessed -- halving AUDIO_BUF_BYTES 4096->2048 (the
+        # eleventh fix) still failed at the exact same 8192 bytes, not the
+        # predicted 4096, meaning 8192 is very likely a FIXED floor inside
+        # the driver, not "2x whatever ibuf you pass". I2S is deliberately
+        # rebuilt fresh for every single clip played (MAX98357A auto-mute
+        # behavior — see module docstring), so this allocation happens on
+        # every sound. Defragging right here, same "gc.collect() then
+        # allocate hardest-first" pattern StripBufferPool already uses,
+        # maximizes the odds this fixed-size ask finds a contiguous home.
+        gc.collect()
         from machine import I2S, Pin
         i2s = I2S(
             0,
@@ -109,13 +236,27 @@ class AudioManager:
 
     # ── Public API ───────────────────────────────────────────────
 
+    def set_game(self, game_id):
+        """Point clip resolution at a game's Tier B audio dir (installed to
+        littlefs by game_cache). Kernel calls this at game load; pass None
+        at unload to fall back to shared clips only."""
+        self._game_root = ("/assets/%s/audio" % game_id) if game_id else None
+
+    def _candidates(self, kind, filename):
+        paths = []
+        if self._game_root:
+            paths.append(self._game_root + "/" + kind + "/" + filename)
+        paths.append(_FLASH_AUDIO_ROOT + "/" + kind + "/" + filename)
+        paths.append(_SD_AUDIO_ROOT + "/" + kind + "/" + filename)
+        return paths
+
     async def play_voice(self, filename: str, wait: bool = False):
         if not self._ready:
             return
         self._cancel(self._voice_task)
-        path = "/sd/audio/voice/" + filename
         self._voice_task = asyncio.create_task(
-            self._guard(self._play_file_or_synth(path, filename)))
+            self._guard(self._play_file_or_synth(
+                self._candidates("voice", filename), filename)))
         if wait:
             try:
                 await self._voice_task
@@ -126,9 +267,9 @@ class AudioManager:
         if not self._ready:
             return
         self._cancel(self._sfx_task)
-        path = "/sd/audio/sfx/" + filename
         self._sfx_task = asyncio.create_task(
-            self._guard(self._play_file_or_synth(path, filename)))
+            self._guard(self._play_file_or_synth(
+                self._candidates("sfx", filename), filename)))
         if wait:
             try:
                 await self._sfx_task
@@ -153,6 +294,10 @@ class AudioManager:
 
     def set_volume(self, vol: float):
         self._volume = max(0.0, min(1.0, vol))
+
+    @property
+    def volume(self) -> float:
+        return self._volume
 
     @property
     def voice_playing(self) -> bool:
@@ -194,53 +339,100 @@ class AudioManager:
                 evt.clear()
                 self._drain_evt = evt
                 self._i2s.write(mv[offset:end])
-                await evt.wait()
+                # Bounded wait: at AUDIO_BUF_BYTES=2048/22050Hz mono 16-bit,
+                # a chunk drains in ~46ms under normal playback, so 1000ms
+                # is generous margin, not a tight deadline. This used to be
+                # an unbounded `await evt.wait()` -- if the I2S drain IRQ
+                # ever doesn't fire (missed/dropped interrupt, hardware
+                # hiccup), that hung this coroutine FOREVER with zero
+                # console output, and since play_sfx/play_voice(wait=True)
+                # awaits this task, it silently froze the whole game loop
+                # until a manual interrupt (suspected root cause of Bonk's
+                # end-screen never appearing, no error before a forced
+                # Ctrl-C — see HARDWARE_NOTES.md). _guard() already catches
+                # and logs whatever this raises, so timing out here recovers
+                # (clip cuts short, one printed diagnostic) instead of
+                # hanging forever.
+                try:
+                    await asyncio.wait_for(evt.wait(), 1.0)
+                except asyncio.TimeoutError:
+                    print("[audio] I2S drain timeout — clip cut short")
+                    break
                 offset = end
         finally:
             if self._drain_evt is evt:
                 self._drain_evt = None
 
-    async def _play_file_or_synth(self, path: str, filename: str):
-        try:
-            await self._play_wav(path)
-        except asyncio.CancelledError:
-            raise
-        except OSError:
-            basename = filename.split("/")[-1]
-            if basename in _SYNTH_MAP:
-                freq, dur, vol = _SYNTH_MAP[basename]
-                await self._play_synth(freq, dur, vol * self._volume)
+    async def _play_file_or_synth(self, paths, filename: str):
+        for path in paths:
+            try:
+                await self._play_wav(path)
+                return
+            except asyncio.CancelledError:
+                raise
+            except OSError:
+                continue      # not at this root — try the next
+        basename = filename.split("/")[-1]
+        if basename in _SYNTH_MAP:
+            freq, dur, vol = _SYNTH_MAP[basename]
+            await self._play_synth(freq, dur, vol * self._volume)
 
     async def _play_wav(self, path: str):
+        # No spi_bus locking/frequency management here — see the module
+        # docstring's CLIP RESOLUTION note for why that trade was reverted.
         f = open(path, 'rb')
-        header = f.read(44)
-        if header[:4] != b'RIFF' or header[8:12] != b'WAVE':
-            f.close()
-            return
-        buf = bytearray(config.AUDIO_BUF_BYTES)
-        mv  = memoryview(buf)
-        self._i2s = self._make_i2s()   # one session for the whole clip
+        # Which of the three CLIP RESOLUTION ORDER tiers this actually
+        # resolved to isn't otherwise visible anywhere -- confirmed on
+        # hardware to cost real debugging time: a clip re-exported and
+        # updated on the SD card can still be shadowed by a same-named
+        # file in a higher-priority tier (Tier B per-game, or the shared
+        # littlefs root) that nobody remembered was there.
+        print(f"[audio] playing {path}")
         try:
-            while True:
-                n = f.readinto(buf)
-                if n == 0:
-                    break
-                if self._volume < 1.0:
-                    for i in range(0, n, 2):
-                        s = struct.unpack_from('<h', buf, i)[0]
-                        struct.pack_into('<h', buf, i, int(s * self._volume))
-                await self._stream(mv, n)
+            info = _read_wav_header(f)
+            if info is None:
+                return
+            channels, sample_rate, bits, data_offset, data_size = info
+            if (channels != 1 or bits != config.AUDIO_BITS
+                    or sample_rate != config.AUDIO_SAMPLE_RATE):
+                print(f"[audio] {path}: ch={channels} bits={bits} "
+                      f"rate={sample_rate}Hz -- expected mono/"
+                      f"{config.AUDIO_BITS}-bit/{config.AUDIO_SAMPLE_RATE}Hz, "
+                      f"will sound wrong. Re-export via the documented "
+                      f"ffmpeg command.")
+            f.seek(data_offset)
+
+            # Reused across calls (grow-if-needed) instead of a fresh
+            # bytearray every clip — this port's GC doesn't move/compact,
+            # so repeated allocate-and-abandon here fragments the heap.
+            if self._read_buf is None or len(self._read_buf) < config.AUDIO_BUF_BYTES:
+                self._read_buf = bytearray(config.AUDIO_BUF_BYTES)
+            buf = self._read_buf
+            mv  = memoryview(buf)
+            self._i2s = self._make_i2s()   # one session for the whole clip
+            try:
+                remaining = data_size
+                while remaining > 0:
+                    want = min(len(buf), remaining)
+                    n = f.readinto(mv[:want])
+                    if not n:
+                        break
+                    remaining -= n
+                    if self._volume < 1.0:
+                        _scale_volume(mv, n, int(self._volume * 256))
+                    await self._stream(mv, n)
+            finally:
+                self._i2s.deinit()
+                self._i2s = None
         finally:
             f.close()
-            self._i2s.deinit()
-            self._i2s = None
 
     async def _play_synth(self, freq: int, duration_ms: int, volume: float = 0.4):
-        buf = _synth_tone(freq, duration_ms,
-                        volume * self._volume, config.AUDIO_SAMPLE_RATE)
+        mv = self._synth_tone(freq, duration_ms,
+                              volume * self._volume, config.AUDIO_SAMPLE_RATE)
         self._i2s = self._make_i2s()
         try:
-            await self._stream(memoryview(buf), len(buf))
+            await self._stream(mv, len(mv))
         finally:
             self._i2s.deinit()
             self._i2s = None
