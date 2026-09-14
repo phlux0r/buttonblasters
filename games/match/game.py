@@ -161,7 +161,7 @@ class ShapeMatchGame(BaseGame):
             for cat in CATEGORIES:
                 if not self._running:
                     break
-                if await self.check_back():
+                if self.check_back():
                     break
 
                 await self._show_category_intro(cat)
@@ -172,7 +172,7 @@ class ShapeMatchGame(BaseGame):
                 shuffle(order)
 
                 for m in range(MATCHES_PER_ROUND):
-                    if await self.check_back():
+                    if self.check_back():
                         self._running = False
                         break
 
@@ -326,29 +326,29 @@ class ShapeMatchGame(BaseGame):
     # ── Input + feedback ─────────────────────────────────────────
 
     async def _wait_answer(self, gate_ms):
-        # Poll the queue directly so BACK (id 4) is handled (the helper
+        # Poll the queue so BACK (id 4) is handled (the helper
         # wait_screen_button() ignores it).
         #
         # TIMESTAMP GATE: a press is accepted only if its press EDGE
-        # (buttons._pressed_at[btn]) occurred at/after gate_ms — i.e. after
+        # (buttons.pressed_at(btn)) occurred at/after gate_ms — i.e. after
         # the match finished drawing. Rejects an eager press made while the
         # icons were still rendering, even if that press enqueues just AFTER
         # we drain the queue below (the race that made the first press feel
         # missed/delayed).
         self.buttons.clear()
         while True:
-            try:
-                btn, evt = self.buttons._queue.get_nowait()
-            except Exception:
+            ev = self.buttons.poll()
+            if ev is None:
                 await asyncio.sleep_ms(15)
                 continue
+            btn, evt = ev
             if evt != "press":
                 continue
             if btn == 4:
                 self.quit()
                 return "quit"
             if btn <= 3:
-                pressed_at = self.buttons._pressed_at[btn]
+                pressed_at = self.buttons.pressed_at(btn)
                 if time.ticks_diff(pressed_at, gate_ms) >= 0:
                     return btn
                 # else: edge was before the gate (during the draw) — ignore
@@ -434,11 +434,11 @@ class ShapeMatchGame(BaseGame):
     async def _wait_end_choice(self):
         self.buttons.clear()
         while True:
-            try:
-                btn, evt = self.buttons._queue.get_nowait()
-            except Exception:
+            ev = self.buttons.poll()
+            if ev is None:
                 await asyncio.sleep_ms(20)
                 continue
+            btn, evt = ev
             if btn == TOUCH_TAP and evt == "tap":
                 return "again"          # tap anywhere on the score screen -> replay
             if evt != "press":

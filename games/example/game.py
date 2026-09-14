@@ -52,7 +52,7 @@ class ExampleGame(BaseGame):
         await self.countdown(3)
 
         while self._running and self.lives > 0:
-            if await self.check_back():
+            if self.check_back():
                 break
 
             self._target = random.randint(0, 3)
@@ -103,27 +103,23 @@ class ExampleGame(BaseGame):
         while True:
             if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
                 return False
-            try:
-                btn, evt = self.buttons._queue.get_nowait()
-                if evt != "press":
-                    continue
-                if btn == 4:
-                    self.quit()
-                    return False
-                if btn <= 3:
-                    if btn == self._target:
-                        self.score += 1
-                        self.level  = 1 + self.score // 5
-                        await self.show_correct()
-                        await self.display.draw_score(self.score,
-                                                      self.lives)
-                        return True
-                    else:
-                        self.lives -= 1
-                        await self.show_wrong()
-                        await self.display.draw_score(self.score,
-                                                      self.lives)
-                        return False
-            except Exception:
-                pass
-            await asyncio.sleep_ms(20)
+            ev = self.buttons.poll()          # non-blocking (id, event)
+            if ev is None:
+                await asyncio.sleep_ms(20)
+                continue
+            btn, evt = ev
+            if evt != "press":
+                continue
+            if btn == 4:
+                self.quit()
+                return False
+            if btn == self._target:
+                self.score += 1
+                self.level  = 1 + self.score // 5
+                await self.show_correct()
+                await self.display.draw_score(self.score, self.lives)
+                return True
+            self.lives -= 1
+            await self.show_wrong()
+            await self.display.draw_score(self.score, self.lives)
+            return False

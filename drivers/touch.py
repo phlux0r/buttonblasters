@@ -43,6 +43,11 @@ class TouchDriver:
         self._long_fired = False
         self._last_pos   = (0, 0)
 
+    def attach_queue(self, queue):
+        """Share ButtonManager's event queue so touch events land beside
+        physical button events (called by ButtonManager.attach_touch())."""
+        self._queue = queue
+
     def init_blocking(self) -> I2C:
         """
         Set up I²C and configure FT6236.

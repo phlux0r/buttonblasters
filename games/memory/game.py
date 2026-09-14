@@ -131,7 +131,7 @@ class ButtonMemoryGame(BaseGame):
             await self._paint_all_bases()
 
             while True:
-                if await self.check_back():
+                if self.check_back():
                     self._running = False
                     break
 
@@ -258,11 +258,11 @@ class ButtonMemoryGame(BaseGame):
 
     async def _wait_one_press(self):
         while True:
-            try:
-                btn, evt = self.buttons._queue.get_nowait()
-            except Exception:
+            ev = self.buttons.poll()
+            if ev is None:
                 await asyncio.sleep_ms(15)
                 continue
+            btn, evt = ev
             if evt != "press":
                 continue
             if btn == 4:
@@ -326,11 +326,11 @@ class ButtonMemoryGame(BaseGame):
     async def _wait_end_choice(self):
         self.buttons.clear()
         while True:
-            try:
-                btn, evt = self.buttons._queue.get_nowait()
-            except Exception:
+            ev = self.buttons.poll()
+            if ev is None:
                 await asyncio.sleep_ms(20)
                 continue
+            btn, evt = ev
             if btn == TOUCH_TAP and evt == "tap":
                 return "again"          # tap anywhere on the score screen -> replay
             if evt != "press":

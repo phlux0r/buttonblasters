@@ -39,15 +39,15 @@ async def _latency_probe():
     buttons.clear()
     last_seen = [0, 0, 0, 0, 0]
     while True:
-        try:
-            btn, evt = buttons._queue.get_nowait()
-        except Exception:
+        ev = buttons.poll()
+        if ev is None:
             await asyncio.sleep_ms(5)
             continue
+        btn, evt = ev
         if evt != "press" or btn > 3:
             continue
         now = time.ticks_ms()
-        edge = buttons._pressed_at[btn]
+        edge = buttons.pressed_at(btn)
         latency = time.ticks_diff(now, edge)
         during = "DURING draw" if _draw_running else "between draws"
         print(f"  btn {btn}: latency {latency:4d} ms   ({during})")

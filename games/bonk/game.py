@@ -346,7 +346,7 @@ class StarBonkGame(BaseGame):
             self._hits = 0   # drives the speed-up curve, whole-game total
 
             for round_no in range(1, len(ROUND_POOL_SIZES) + 1):
-                if not self._running or await self.check_back():
+                if not self._running or self.check_back():
                     self._running = False
                     break
 
@@ -371,7 +371,7 @@ class StarBonkGame(BaseGame):
                 await self._draw_header(round_no)
 
                 for _ in range(ROUND_HITS):
-                    if await self.check_back():
+                    if self.check_back():
                         self._running = False
                         break
                     if not await self._spawn_and_wait(pool):
@@ -522,11 +522,11 @@ class StarBonkGame(BaseGame):
         while True:
             if time.ticks_diff(deadline_ms, time.ticks_ms()) <= 0:
                 return True
-            try:
-                btn, evt = self.buttons._queue.get_nowait()
-            except Exception:
+            ev = self.buttons.poll()
+            if ev is None:
                 await asyncio.sleep_ms(15)
                 continue
+            btn, evt = ev
             if btn == 4 and evt == "press":
                 self.quit()
                 return False
@@ -553,11 +553,11 @@ class StarBonkGame(BaseGame):
                 if self.tap_hit(tx, ty, rect):
                     return True
 
-            try:
-                btn, evt = self.buttons._queue.get_nowait()
-            except Exception:
+            ev = self.buttons.poll()
+            if ev is None:
                 await asyncio.sleep_ms(15)
                 continue
+            btn, evt = ev
             if btn == 4 and evt == "press":
                 self.quit()
                 return "quit"
@@ -629,11 +629,11 @@ class StarBonkGame(BaseGame):
     async def _wait_end_choice(self):
         self.buttons.clear()
         while True:
-            try:
-                btn, evt = self.buttons._queue.get_nowait()
-            except Exception:
+            ev = self.buttons.poll()
+            if ev is None:
                 await asyncio.sleep_ms(20)
                 continue
+            btn, evt = ev
             if btn == TOUCH_TAP and evt == "tap":
                 return "again"          # tap anywhere on the score screen -> replay
             if evt != "press":

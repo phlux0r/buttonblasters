@@ -81,6 +81,16 @@ class _SimpleQueue:
             return self._buf.pop(0)
         raise IndexError("empty")
 
+    def remove_first(self, pred):
+        """Remove and return the first queued item for which pred(item)
+        is true, leaving every other item in place and in order. None if
+        nothing matches. Lets a caller pull one specific event (BACK) out
+        without swallowing whatever else is queued ahead of it."""
+        for i in range(len(self._buf)):
+            if pred(self._buf[i]):
+                return self._buf.pop(i)
+        return None
+
     async def put(self, item):
         while self.full():
             await asyncio.sleep_ms(5)
@@ -104,6 +114,10 @@ BTN_BACK     = 4
 # Menu role aliases — see the 2x2 layout note above
 BTN_PREV = BTN_SCREEN_1   # ← shown on BTN-1 display (bottom-left)
 BTN_NEXT = BTN_SCREEN_3   # → shown on BTN-3 display (bottom-right)
+
+def _is_back_press(ev):
+    return ev[0] == BTN_BACK and ev[1] == "press"
+
 
 # MCP23008 registers
 _IODIR    = 0x00
@@ -142,7 +156,7 @@ class ButtonManager:
 
     def attach_touch(self, touch_driver):
         """Wire TouchDriver queue so touch events appear alongside buttons."""
-        touch_driver._queue = self._queue
+        touch_driver.attach_queue(self._queue)
         self._touch = touch_driver
 
     # ── MCP23008 helpers ─────────────────────────────────────────
@@ -250,26 +264,54 @@ class ButtonManager:
             except Exception:
                 break
 
+    # ── Non-blocking API for game loops ───────────────────────────
+    # These are the sanctioned way for a game to read input from inside
+    # its own polling loop (reaction games, belt ticks, end screens).
+    # Never reach into _queue / _pressed_at directly from game code.
+
+    def poll(self):
+        """Return the next queued (id, event) tuple, or None if the queue
+        is empty. Never blocks."""
+        if self._queue is None or self._queue.empty():
+            return None
+        return self._queue.get_nowait()
+
+    def take_back_press(self) -> bool:
+        """True if a BACK/HOME press is queued — and remove ONLY that
+        event, leaving everything else queued in order. Safe to call
+        alongside poll(): it can never eat a screen-button press the
+        caller's own poll() was about to see (the bug that made Bakery's
+        "clear a wrong item" press vanish when check_back() popped it)."""
+        if self._queue is None:
+            return False
+        return self._queue.remove_first(_is_back_press) is not None
+
+    def pressed_at(self, btn: int) -> int:
+        """time.ticks_ms() of the most recent press EDGE of physical
+        button btn (0-4). Lets a game reject a press that was made before
+        its own draw finished (see games/match/game.py's timestamp gate)."""
+        return self._pressed_at[btn]
+
     # ── Touch helpers ─────────────────────────────────────────────
 
     async def get_tap(self):
         """Block until screen tap. Returns (x, y)."""
         while True:
-            btn, evt = await self._queue.get()
+            btn, evt = await self.get()
             if btn == TOUCH_TAP and evt == "tap":
                 return self._touch.pos or (0, 0)
 
     async def get_swipe(self) -> str:
         """Block until swipe. Returns direction string."""
         while True:
-            btn, evt = await self._queue.get()
+            btn, evt = await self.get()
             if btn == TOUCH_SWIPE:
                 return evt
 
     async def get_press_or_tap(self):
         """Block until physical press OR screen tap."""
         while True:
-            btn, evt = await self._queue.get()
+            btn, evt = await self.get()
             if (evt == "press" and btn <= 4) or btn == TOUCH_TAP:
                 return btn, evt
 
@@ -285,7 +327,7 @@ class ButtonManager:
           "swipe"  — swipe gesture, data = direction string
         """
         while True:
-            btn, evt = await self._queue.get()
+            btn, evt = await self.get()
             if evt == "press" and btn <= 4:
                 if btn == BTN_PREV: return "prev",   None
                 if btn == BTN_NEXT: return "next",   None

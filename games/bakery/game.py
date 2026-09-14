@@ -368,7 +368,7 @@ class MagicBakeryGame(BaseGame):
             self._total_elapsed_ms = 0
 
             for recipe_no, recipe in enumerate(recipes, 1):
-                if not self._running or await self.check_back():
+                if not self._running or self.check_back():
                     self._running = False
                     break
 
@@ -463,19 +463,14 @@ class MagicBakeryGame(BaseGame):
 
         try:
             while len(collected) < len(needed) and self._running:
-                # ONE queue read per tick, not two -- check_back() also
-                # does its own get_nowait() internally, and calling it
-                # separately from our own button-press poll below meant
-                # whichever ran first silently ate the other's event (the
-                # queue only ever holds one item at a time in practice).
-                # That's exactly why the button-screen "clear a wrong
-                # item" press never seemed to register: check_back() was
-                # swallowing it before this loop's own poll ever saw it.
-                # Every other game in this codebase merges the two reads
-                # into one for the same reason (see e.g. games/bonk/game.py
-                # _wait_before_spawn's single get_nowait()).
-                try:
-                    btn, evt = self.buttons._queue.get_nowait()
+                # One poll() per tick handles BACK and the screen buttons
+                # together. (check_back() used to pop-and-discard whatever
+                # was at the head of the queue, which is how the "clear a
+                # wrong item" press went missing; it now only ever removes
+                # a BACK press, but a single read here is still simplest.)
+                ev = self.buttons.poll()
+                if ev is not None:
+                    btn, evt = ev
                     if evt == "press" and btn == 4:
                         self._running = False
                         quit_requested = True
@@ -483,8 +478,6 @@ class MagicBakeryGame(BaseGame):
                         break
                     if evt == "press" and btn in (0, 1, 2, 3):
                         await self._on_button_press(btn)
-                except Exception:
-                    pass
 
                 for entry in belt:
                     if not entry["active"]:
@@ -831,11 +824,11 @@ class MagicBakeryGame(BaseGame):
     async def _wait_end_choice(self):
         self.buttons.clear()
         while True:
-            try:
-                btn, evt = self.buttons._queue.get_nowait()
-            except Exception:
+            ev = self.buttons.poll()
+            if ev is None:
                 await asyncio.sleep_ms(20)
                 continue
+            btn, evt = ev
             if btn == TOUCH_TAP and evt == "tap":
                 return "again"
             if evt != "press":

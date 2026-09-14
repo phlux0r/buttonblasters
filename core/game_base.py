@@ -145,15 +145,15 @@ class BaseGame:
     def tap_hit(self, tx: int, ty: int, rect: tuple) -> bool:
         return self.buttons.hit_test(tx, ty, rect)
 
-    async def check_back(self) -> bool:
-        """Non-blocking check — has BACK (id=4) been pressed?"""
-        try:
-            btn, evt = self.buttons._queue.get_nowait()
-            if btn == 4 and evt == "press":
-                self.quit()
-                return True
-        except Exception:
-            pass
+    def check_back(self) -> bool:
+        """Non-blocking — has BACK (id=4) been pressed? Removes only that
+        event; any other queued input is left for the caller's own
+        buttons.poll(). (The old version popped ONE event of any kind and
+        threw it away if it wasn't BACK, silently eating screen-button
+        presses that a game's own loop was about to read.)"""
+        if self.buttons.take_back_press():
+            self.quit()
+            return True
         return False
 
     async def show_correct(self):
