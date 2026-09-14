@@ -70,11 +70,11 @@ class Menu:
         await self._render_full()
 
         # First point in boot where all 4 button screens actually have
-        # real content on them -- drivers/display.py starts the shared
-        # backlight (GP13) OFF specifically so it can be turned on exactly
-        # here instead of at power-on, which used to show raw, uninitialized
-        # panel RAM (visible noise) for the whole rest of boot.
-        display.set_btn_backlight(True)
+        # real content on them -- the shared backlight (GP13) starts OFF so
+        # raw panel RAM is never visible during boot. One-shot: only the
+        # first menu entry turns it on; after that the kernel's idle
+        # watchdog owns the backlight (see DisplayManager.btn_content_ready).
+        display.btn_content_ready()
 
         while True:
             action, data = await buttons.get_menu_event()

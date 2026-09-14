@@ -267,8 +267,14 @@ BAT_WARN_PCT   = 15
 
 # ── UX timing ────────────────────────────────────────────────────
 MENU_SCROLL_MS     = 120
-GAME_RETURN_IDLE_S = 60   # idle timeout on a game's END SCREEN only (see
-                          # BaseGame.wait_or_timeout_back) -- never mid-play
+GAME_RETURN_IDLE_S = 90   # idle timeout on a game's END SCREEN only (see
+                          # BaseGame.wait_or_timeout_back) -- never mid-play.
+                          # Deliberately LONGER than SCREEN_DIM_S: at 60/60
+                          # the dim and the menu-return raced within the
+                          # same few seconds, so a 'Play again?' card went
+                          # dark and then the menu reappeared unbidden.
+                          # Now the screens sleep first, and the quiet
+                          # return to the menu happens in the dark.
 SCREEN_DIM_S       = 60
 
 # ── Countdown text scale ─────────────────────────────────────────

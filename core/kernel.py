@@ -294,8 +294,12 @@ class AppKernel:
         # meant menu navigation and in-game play never reset the idle
         # timer at all, so the button screens dimmed and then nothing
         # short of actually launching a game brought them back.
+        #
+        # 500ms poll, not 5s: the check is one ticks_diff, and the poll
+        # period is exactly how long a child's first press on a dark device
+        # can go unanswered before the screens come back.
         while True:
-            await asyncio.sleep_ms(5000)
+            await asyncio.sleep_ms(500)
             idle_s = time.ticks_diff(
                 time.ticks_ms(), buttons.last_input_ms) // 1000
             if idle_s >= config.SCREEN_DIM_S and not self._dimmed:

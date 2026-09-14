@@ -183,8 +183,26 @@ class DisplayManager:
     def set_btn_backlight(self, on: bool):
         """Turn the 4 button screens' shared backlight (GP13) on/off. The
         main ILI9488's backlight has no such control -- it's hardwired to
-        3.3V -- so this is the one real display-power lever available."""
+        3.3V -- so this is the one real display-power lever available.
+        Owned by core/kernel.py's idle watchdog after boot; nothing else
+        should drive it (see btn_content_ready())."""
         set_btn_backlight(on)
+
+    _btn_content_shown = False
+
+    def btn_content_ready(self):
+        """Call once real content is on the button screens. The shared
+        backlight starts OFF at power-on so the raw, uninitialised panel RAM
+        is never visible during boot; the FIRST call here turns it on.
+        Every later call is a no-op on purpose: the menu re-enters after
+        every game, including after an end screen timed out with nobody
+        touching the device, and switching the backlight on there re-woke
+        screens the idle watchdog had just put to sleep (seen on hardware
+        as off-then-on on a 'Play again?' card). After the first call the
+        watchdog alone decides when the backlight is on."""
+        if not DisplayManager._btn_content_shown:
+            DisplayManager._btn_content_shown = True
+            set_btn_backlight(True)
 
     # ── Fill helpers ─────────────────────────────────────────────
 
