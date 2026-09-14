@@ -121,12 +121,35 @@ def to_raw_bba(data: bytes) -> bytes:
     return header + bytes(table) + b"".join(chunks)
 
 
-# Stale per-game menu art left on littlefs by deploys from before the split
-# would shadow the SD copies (open_background tries flash first) AND keep
-# hogging ~870KB -- remove it on every install, in one exec (each separate
-# mpremote command is its own connect + soft reset, so not one rm per file).
-_RM_STALE_MENU_ART = (
+# Post-copy cleanup, run ON THE PICO as ONE mpremote exec (each separate
+# mpremote command is its own connect + soft reset, so never one rm per
+# file). Two jobs:
+#
+#  1. Remove the module extension we did NOT just deploy. MicroPython's
+#     import tries foo.py before foo.mpy, so a stale .py left behind from a
+#     plain deploy silently shadows the fresh .mpy from a --mpy deploy (and
+#     a stale .mpy from an old --mpy deploy is dead weight after a plain
+#     one). /main.py is always kept -- it is the boot entry point and is
+#     always deployed as .py -- and /sd is never entered.
+#  2. Remove stale per-game menu art on littlefs from deploys before the
+#     menu split: it would shadow the SD copies (open_background tries
+#     flash first) and keep hogging ~870KB.
+_CLEANUP_ON_DEVICE = (
     "import os\n"
+    "STALE_EXT = %r\n"
+    "def walk(d):\n"
+    "    for n in os.listdir(d):\n"
+    "        p = (d + '/' + n) if d != '/' else '/' + n\n"
+    "        if p == '/sd':\n"
+    "            continue\n"
+    "        try:\n"
+    "            os.listdir(p)\n"
+    "            walk(p)\n"
+    "        except OSError:\n"
+    "            if p.endswith(STALE_EXT) and p != '/main.py':\n"
+    "                os.remove(p)\n"
+    "                print('removed stale module:', p)\n"
+    "walk('/')\n"
     "try:\n"
     "    names = os.listdir('/assets/menu')\n"
     "except OSError:\n"
@@ -135,8 +158,13 @@ _RM_STALE_MENU_ART = (
     "    if n.startswith(%r):\n"
     "        os.remove('/assets/menu/' + n)\n"
     "        print('removed stale flash copy:', n)\n"
-    % (PER_GAME_MENU_PREFIXES,)
 )
+
+
+def cleanup_snippet(mpy: bool) -> str:
+    """The on-device cleanup for this deploy mode: a --mpy deploy clears
+    stale .py files, a plain deploy clears stale .mpy files."""
+    return _CLEANUP_ON_DEVICE % (".py" if mpy else ".mpy", PER_GAME_MENU_PREFIXES)
 
 
 def stage():
@@ -225,10 +253,10 @@ def mpremote(port, *args):
     subprocess.run(cmd, check=True)
 
 
-def install(port, push_sd):
+def install(port, push_sd, mpy):
     for child in sorted(STAGE_FW.iterdir()):
         mpremote(port, "cp", "-r", str(child), ":")
-    mpremote(port, "exec", _RM_STALE_MENU_ART)
+    mpremote(port, "exec", cleanup_snippet(mpy))
     if push_sd:
         # /sd is only the real SD card if main.py's own boot sequence
         # already ran far enough to mount it (core/kernel.py step 7) --
@@ -320,7 +348,7 @@ def main():
     if opts.dry_run:
         print(f"dry run — inspect {BUILD}")
         return
-    install(opts.port, opts.sd)
+    install(opts.port, opts.sd, opts.mpy)
     print("done — reset the Pico to boot the new firmware")
 
 
