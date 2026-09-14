@@ -99,13 +99,17 @@ class Menu:
                 await self._render_full()
 
             elif action == "select":
-                # BTN-0 → launch idx-1 preview, BTN-2 → launch idx+1 preview
+                # BTN-0 → launch idx-1 preview, BTN-2 → launch idx+1 preview.
+                # wait=True on the select sound (here and below): the kernel
+                # paints the WAIT... banner the moment this returns, and an
+                # SD-backed clip's lock-free card reads would land mid-paint
+                # (same tearing as the countdown, see BaseGame.countdown).
                 btn = data
                 if btn == 0:
                     self._idx = (self._idx - 1) % self._n
                 elif btn == 2:
                     self._idx = (self._idx + 1) % self._n
-                await audio.play_sfx("menu_select.wav")
+                await audio.play_sfx("menu_select.wav", wait=True)
                 return self._registry[self._idx]
 
             elif action == "back":
@@ -116,7 +120,7 @@ class Menu:
             elif action == "tap":
                 tx, ty = data
                 if buttons.hit_test(tx, ty, _SETTINGS_ICON):
-                    await audio.play_sfx("menu_select.wav")
+                    await audio.play_sfx("menu_select.wav", wait=True)
                     await settings_screen.run()
                     buttons.clear()
                     # SettingsScreen overwrites BTN-1/BTN-3 with its -/+
@@ -127,7 +131,7 @@ class Menu:
                     await self._render_full()
                 # Lower half of main screen = launch selected game
                 elif ty > config.MAIN_H // 2:
-                    await audio.play_sfx("menu_select.wav")
+                    await audio.play_sfx("menu_select.wav", wait=True)
                     return self._registry[self._idx]
 
             elif action == "swipe":

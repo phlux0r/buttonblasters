@@ -16,6 +16,7 @@
 
 import asyncio
 import random
+import time
 import config
 from core.display_manager import WHITE, YELLOW, rgb
 from drivers.haptic import haptic
@@ -320,17 +321,27 @@ class BaseGame:
                                      bg=bg_color, scale=s)
 
     async def countdown(self, from_n: int = 3):
+        # Draw FIRST, then play the clip AWAITED, then sleep whatever is
+        # left of the beat. This used to fire the clip and draw at once
+        # (to hide the ~80ms full-screen paint as callout latency), which
+        # was fine while the count/go names had no files and the synth
+        # fallback played from RAM. Real voice samples on the SD card
+        # broke it: drivers/audio.py reads the card WITHOUT the SPI0 bus
+        # lock (by design), so the clip's file reads landed mid-paint with
+        # the ILI9488's CS low -- confirmed on hardware as the countdown
+        # background tearing on the 'ready'/'go' samples. Rule for every
+        # game: never draw while an SD-backed clip may still be reading.
         for n in range(from_n, 0, -1):
-            # Sound BEFORE the render: play_sfx is fire-and-forget, so this
-            # costs nothing but removes the full-screen fill + text render
-            # as latency before each number's callout even starts — matters
-            # most in the app's single most rhythm-sensitive moment.
-            await self.audio.play_sfx(f"count_{n}.wav")
-            await self._show_countdown_text(str(n), 0x18C3)
-            await asyncio.sleep_ms(800)
-        await self.audio.play_sfx("go.wav")
-        await self._show_countdown_text("GO!", 0x0320)
-        await asyncio.sleep_ms(500)
+            await self._countdown_beat(str(n), 0x18C3, f"count_{n}.wav", 800)
+        await self._countdown_beat("GO!", 0x0320, "go.wav", 500)
+
+    async def _countdown_beat(self, text, bg_color, clip, beat_ms):
+        t0 = time.ticks_ms()
+        await self._show_countdown_text(text, bg_color)
+        await self.audio.play_sfx(clip, wait=True)
+        left = beat_ms - time.ticks_diff(time.ticks_ms(), t0)
+        if left > 0:
+            await asyncio.sleep_ms(left)
 
     def _make_result(self) -> GameResult:
         return GameResult(
