@@ -216,11 +216,6 @@ class StarBonkGame(BaseGame):
     async def run(self) -> GameResult:
         self._running = True
         self.score = 0
-        self._session_best = 0   # best round-set score THIS session -- "Play
-                                  # Again" resets self.score, so without this
-                                  # only your LAST attempt before quitting
-                                  # would ever be reported, even if an
-                                  # earlier attempt this session scored higher
 
         if self.USES_COUNTDOWN:
             await self.countdown(3)   # only ever fires once — never on replay
@@ -269,17 +264,14 @@ class StarBonkGame(BaseGame):
             if not self._running:
                 break   # mid-game BACK/HOME — exit immediately, no end screen
 
-            self._session_best = max(self._session_best, self.score)
             choice = await self._end_screen()
             if choice == "back":
                 break
             self.score = 0   # "again" — straight back into round 1
 
-        # Report the best completed round-set this session, not just
-        # whatever self.score happens to be at the moment of quitting (which
-        # is 0/low if BACK was pressed mid-round on a "Play Again" replay,
-        # even though an earlier attempt this session scored higher).
-        self.score = max(self.score, self._session_best)
+        # _make_result() reports the best completed round-set this session
+        # (BaseGame tracks it from show_end_screen), not whatever self.score
+        # holds at the moment of quitting.
         return self._make_result()
 
     async def unload(self):

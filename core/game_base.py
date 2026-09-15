@@ -114,6 +114,8 @@ class BaseGame:
         self.best_time_s  = best_time_s     # persisted best clean-run time, if any
         self._beat_best_time = False        # set by note_best_time(), consumed
                                              # by announce_round_complete()
+        self._session_best = 0              # best round-set score this session;
+                                             # see show_end_screen()/_make_result()
         self._running     = False
         self._quit        = False
 
@@ -266,6 +268,17 @@ class BaseGame:
         """Paint the standard end screen and wait for the player.
         extra_line: optional text drawn one line below the stars (e.g. a
         clean-run time). Returns "again" or "back"."""
+        # Remember this round-set's score before anything resets it. Every
+        # replayable game sets self.score = 0 on "play again", so a player
+        # who scores well, plays again and then presses BACK mid-round
+        # would otherwise report that last, abandoned attempt (0 or low) to
+        # the kernel -- losing a high score they had actually earned.
+        # _make_result() reports the best of the session instead. This is
+        # the right hook because a completed round-set is exactly when this
+        # screen is shown.
+        if self.score > self._session_best:
+            self._session_best = self.score
+
         try:
             self.leds.stop_effect()
         except Exception:
@@ -387,9 +400,12 @@ class BaseGame:
             await asyncio.sleep_ms(left)
 
     def _make_result(self) -> GameResult:
+        # The BEST completed round-set this session, not whatever self.score
+        # happens to hold at the moment of quitting (see show_end_screen).
+        score = max(self.score, self._session_best)
         return GameResult(
-            score=self.score,
-            stars=self._stars_for(self.score),
+            score=score,
+            stars=self._stars_for(score),
             completed=not self._quit,
         )
 

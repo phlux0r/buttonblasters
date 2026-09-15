@@ -149,7 +149,7 @@ class MyGame(BaseGame):
         await super().unload()   # stops audio, evicts caches, clears screens
 ```
 
-If your game is scored by time rather than points, call `self.note_best_time(seconds)` in `_end_screen()` first: it tracks the record across replays, returns the `BEST!`/`TIME` line for the card, and makes a faster run count as a high score (a points-only comparison can never improve once the score is maxed). For a standard "result card + Again/Back tiles" ending, set the `RESULT_*` class attributes and call `await self.show_end_screen(score_str, extra_line=...)` — it paints the card, stars, tiles, plays the cheer, and returns `"again"` or `"back"` (with an idle timeout). See `games/memory/game.py` for the shortest example.
+`show_end_screen()` also records the round-set's score, so `_make_result()` reports the best attempt of the session rather than whatever `self.score` holds when the player quits mid-replay. If your game is scored by time rather than points, call `self.note_best_time(seconds)` in `_end_screen()` first: it tracks the record across replays, returns the `BEST!`/`TIME` line for the card, and makes a faster run count as a high score (a points-only comparison can never improve once the score is maxed). For a standard "result card + Again/Back tiles" ending, set the `RESULT_*` class attributes and call `await self.show_end_screen(score_str, extra_line=...)` — it paints the card, stars, tiles, plays the cheer, and returns `"again"` or `"back"` (with an idle timeout). See `games/memory/game.py` for the shortest example.
 
 **3. Register it** in `games/registry.py`:
 ```python
